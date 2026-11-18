@@ -21,6 +21,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 jobs:
   foss-apk:
     if: ${{ !inputs.diagnostic }}
@@ -39,11 +42,17 @@ jobs:
         working-directory: /
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 build-essential clang lld ninja-build openjdk-21-jdk-headless
+          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 python3-numpy python3-pil python3-fonttools build-essential clang lld ninja-build openjdk-21-jdk-headless
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
+          submodules: false
           path: ${{ inputs.subdir || '.' }}
+      - name: Prepare sources uploaded from ZIP
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          chmod +x gradlew
+          find tools -type f -name '*.sh' -exec chmod +x {} +
+          bash tools/aevix_restore_deps.sh
       - name: Install the Android SDK
         run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -87,11 +96,17 @@ jobs:
         working-directory: /
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 build-essential clang lld ninja-build openjdk-21-jdk-headless
+          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 python3-numpy python3-pil python3-fonttools build-essential clang lld ninja-build openjdk-21-jdk-headless
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
+          submodules: false
           path: ${{ inputs.subdir || '.' }}
+      - name: Prepare sources uploaded from ZIP
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          chmod +x gradlew
+          find tools -type f -name '*.sh' -exec chmod +x {} +
+          bash tools/aevix_restore_deps.sh
       - name: Install the Android SDK
         run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -141,11 +156,17 @@ jobs:
         working-directory: /
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 build-essential clang lld ninja-build openjdk-21-jdk-headless
+          apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 python3-numpy python3-pil python3-fonttools build-essential clang lld ninja-build openjdk-21-jdk-headless
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
+          submodules: false
           path: ${{ inputs.subdir || '.' }}
+      - name: Prepare sources uploaded from ZIP
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          chmod +x gradlew
+          find tools -type f -name '*.sh' -exec chmod +x {} +
+          bash tools/aevix_restore_deps.sh
       - name: Install the Android SDK
         run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -201,6 +222,12 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git log -1 --format='%H %s'
+      - name: Prepare sources uploaded from ZIP
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          chmod +x gradlew
+          find tools -type f -name '*.sh' -exec chmod +x {} +
+          bash tools/aevix_restore_deps.sh
       - name: Install the Android SDK
         run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"

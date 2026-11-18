@@ -3,8 +3,11 @@ name: aevix-android
 on:
   workflow_dispatch:
   push:
-    branches: [development, develop]
+    branches: [main, master, development, develop]
   pull_request:
+
+permissions:
+  contents: read
 
 concurrency:
   group: aevix-android-${{ github.ref }}
@@ -26,11 +29,14 @@ jobs:
           apt-get install -y --no-install-recommends git ca-certificates curl unzip xz-utils python3 python3-numpy python3-pil python3-fonttools build-essential clang lld ninja-build openjdk-21-jdk-headless
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          submodules: recursive
-      - name: Mark workspace safe for git
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          submodules: false
+      - name: Prepare sources uploaded from ZIP
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          chmod +x gradlew
+          find tools -type f -name '*.sh' -exec chmod +x {} +
       - name: Restore native dependencies (whisper.cpp, ncnn)
-        run: tools/aevix_restore_deps.sh
+        run: bash tools/aevix_restore_deps.sh
       - name: Install the Android SDK, NDK and CMake
         run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -44,10 +50,14 @@ jobs:
           echo 'org.gradle.java.home=/usr/lib/jvm/java-21-openjdk-amd64' >> gradle.properties
       - name: Build Skia (arm64, pinned commit, local patch)
         run: tools/build_skia.sh
+      - name: Build host libraries used by unit tests
+        run: |
+          sh tools/audio_dsp.sh --lib
+          sh tools/tracker_check.sh --lib
       - name: Unit tests
-        run: ./gradlew :app:testFossDebugUnitTest --no-daemon
+        run: ./gradlew :app:testFossDebugUnitTest --no-daemon --stacktrace
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleFossDebug --no-daemon
+        run: ./gradlew :app:assembleFossDebug --no-daemon --stacktrace
       - name: Verify APK (package id, ABI, signature, not debuggable-less release)
         run: |
           set -eu
@@ -55,10 +65,12 @@ jobs:
           test -s "$APK"
           unzip -tq "$APK"
           BT="$ANDROID_HOME/build-tools/37.0.0"
-          "$BT/aapt2" dump badging "$APK" | tee /tmp/badging.txt | head -n 5
+          "$BT/aapt2" dump badging "$APK" > /tmp/badging.txt
+          head -n 5 /tmp/badging.txt
           grep -q "package: name='app.aevix'" /tmp/badging.txt
           grep -q "application-label:'Aevix'" /tmp/badging.txt
-          unzip -l "$APK" | grep -q 'lib/arm64-v8a/.*\.so'
+          unzip -Z1 "$APK" > /tmp/apk-entries.txt
+          grep -q '^lib/arm64-v8a/.*\.so$' /tmp/apk-entries.txt
           "$BT/apksigner" verify --verbose "$APK"
           mkdir -p out && cp "$APK" out/Aevix-debug.apk
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -70,7 +82,8 @@ jobs:
         if: failure()
         run: |
           mkdir -p logs
-          cp -r android/build/reports logs/ 2>/dev/null || true
+          cp -r android/build/reports logs/reports 2>/dev/null || true
+          cp -r android/build/test-results logs/test-results 2>/dev/null || true
           find third_party/skia/out -name 'ninja.log' -o -name '.ninja_log' 2>/dev/null | head -n 5 | xargs -r -I{} cp {} logs/
           find android/.cxx -name 'cmake_server_log.txt' -o -name 'build_output.txt' 2>/dev/null | head -n 5 | xargs -r -I{} cp {} logs/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
