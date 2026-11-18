@@ -1,0 +1,369 @@
+# Building AbsentMotion
+
+From a fresh checkout to a running Android app and the release files. The project is a Kotlin/Compose user interface
+with a C++ engine on top of Skia, which is built from source.
+
+> macOS builds and the Debian CI build are supported. A fresh checkout still needs the SDK, NDK, JDK and native libraries described below.
+
+## 1. What you can build, and where
+
+The repository has one folder per platform: `shared/` (the Kotlin UI, the C++ engine, assets and texts every platform uses),
+`android/` (the Android app, Gradle module `:app`), `pc/` (the desktop layer shared by every desktop system), and `macos/`,
+`windows/` and `linux/` (what only that system uses). Each folder has a short README.
+
+The Android app (`android/`) builds to APKs for `arm64-v8a` in two flavours, `foss` and `compat`, plus `compat32`, the Compatible build for
+32-bit ARM (`armeabi-v7a`), and `foss` and `compat` once more for `x86_64` (Chromebooks with Intel or AMD chips) (section 6). The
+maintainer builds it on macOS (Apple silicon).
+
+The build scripts support macOS and Linux with the Android NDK. CI builds the unsigned `foss` APK on Debian. Windows hosts are not supported.
+
+## 2. Disk space
+
+About 15 GB free (Skia with its dependencies, the Gradle cache, the Android SDK and NDK).
+
+## 3. Tools to install
+
+| Tool | Version | Used for |
+|---|---|---|
+| JDK | **21** | Gradle and Kotlin. A newer JDK (Homebrew's default is 27) does not work with the Android Gradle Plugin. |
+| Android SDK | platform **37** (`android-37.0`), build-tools **37.0.0** | The Android app (`compileSdk = 37`). Install with Android Studio's SDK Manager or the command-line SDK tools. |
+| Android NDK | **30.0.16248370** (r30) | The engine for Android (`ndkVersion` in `android/build.gradle.kts`). |
+| CMake (Android SDK package) | **3.31.6** | Pinned in `android/build.gradle.kts` for the Android engine. |
+| Ninja | any recent (1.13 used) | Skia (`ninja` must be on `PATH`). |
+| Python | 3 | The Skia dependency sync and the helper scripts in `tools/`. `tools/check.sh` also needs the packages `numpy`, `Pillow` and `fontTools`. |
+| C++ compiler | `clang++` (the Xcode command line tools, or the `clang` package) | The host tests in `tools/check.sh`. |
+| git | system | Fetching Skia and its dependencies. |
+
+The Gradle wrapper downloads **Gradle 9.8.2** itself. The build files pin the Android Gradle Plugin 9.4.1, Kotlin 2.4.21
+and the Compose BOM 2026.09.00.
+
+**Homebrew:**
+
+```
+brew install openjdk@21 ninja
+```
+
+**JDK.** Set `JAVA_HOME` to JDK 21. The scripts in `tools/` source `tools/env.sh`, which takes a JetBrains Runtime 21 when
+one is installed, otherwise `JAVA_HOME` if set, and otherwise looks for a JDK 21 (including Homebrew's).
+
+**Android SDK location.** Create `local.properties` in the project root (it is git-ignored):
+
+```
+sdk.dir=/path/to/Android/sdk
+```
+
+Set `ANDROID_NDK` to the NDK directory if it is not at `~/Library/Android/sdk/ndk/30.0.16248370`.
+
+## 4. Third-party sources in `third_party/`
+
+| Directory | What | State |
+|---|---|---|
+| `third_party/whisper.cpp` | whisper.cpp / ggml **1.9.5** (MIT), for on-device captions | Pinned git submodule; initialise it with `git submodule update --init --recursive`. |
+| `third_party/ncnn` | ncnn **20261020** (BSD-3-Clause) with its glslang copy, the on-device AI runtime | Pinned git submodule with a nested glslang submodule; `git submodule update --init --recursive` fetches both. |
+| `third_party/rife_warp` | The `rife.Warp` layer from rife-ncnn-vulkan (MIT) | Vendored copy, unchanged, with its licence. |
+| `third_party/rnnoise` | RNNoise (BSD-3-Clause), for noise reduction | Vendored copy in the tree. Meant to become a pinned submodule; the upstream commit is not recorded yet. |
+| `third_party/skia` | Skia | **Not in the repository** (git-ignored). Fetched by `tools/build_skia.sh`. |
+
+Nothing else needs to be fetched by hand. The Whisper speech models and the AI Enhance and AI Smooth models are not part
+of the build: the app downloads each one the first time it is used.
+
+## 5. Skia
+
+Skia is pinned to **branch `chrome/m156`, commit `95ee33d7ec7791ab9c071675710a14fe6408ae4f`**, plus one local patch
+(`tools/skia-patches/vulkan-dst-read-copy.patch`, which changes the Vulkan back end to copy the destination for
+blend modes).
+
+```
+tools/build_skia.sh
+```
+
+What the script does, in order:
+
+1. Fetches Skia into `third_party/skia` (if the directory is absent): a shallow fetch of the pinned commit or, if that
+   fails, a shallow clone of the branch `chrome/m156`. It stops with an error if `third_party/skia` is not at the
+   pinned commit.
+2. Writes `DEPS.filtered`: Skia's dependency list without the parts an Android Vulkan build does not use (Dawn,
+   ANGLE, SwiftShader, emsdk and others).
+3. Fetches the pinned source dependencies with `tools/skia_sync.py`. Builds the pinned `gn` tool from source with `tools/build_gn.sh`.
+4. Applies the patches in `tools/skia-patches/` if they are not applied yet.
+5. Writes `third_party/skia/out/android-arm64/args.gn` (the NDK path plus `tools/skia-args.gn`), runs `gn gen` and
+   `ninja`, then packs the path-operation objects into `libpathops.a` with the NDK's `llvm-ar` (from the host's `darwin-x86_64` or `linux-x86_64`
+   directory).
+
+`tools/build_skia.sh compat` builds the same Skia a second time with `ndk_api = 28` instead of the value in
+`tools/skia-args.gn` into `third_party/skia/out/android-arm64-compat/` (about 180 MB), which the `compat` flavour links. The symbols it uses
+only need Android 8, which `tools/compat/compat_check.sh` checks with `tools/api_floor.py --min 26`. `tools/build_skia.sh compat32` builds it for
+32-bit ARM (`target_cpu = "arm"`, `ndk_api = 26`) into `third_party/skia/out/android-arm-compat/`, which the `compat32` flavour links.
+`tools/build_skia.sh x64` and `tools/build_skia.sh compat-x64` build the same two for `target_cpu = "x64"` into `out/android-x64/` and
+`out/android-x64-compat/` (about 180 MB each), which the x86_64 builds link.
+
+**Output:** `third_party/skia/out/android-arm64/` holds the static libraries the Android engine links
+(`libskia.a`, `libpathops.a`, `libskparagraph.a`, `libskshaper.a`, `libskunicode_core.a`, `libskunicode_icu.a` and the
+libraries of Skia's own dependencies). `shared/cpp/CMakeLists.txt` reads them from there.
+
+**The pin.** If the script stops because `third_party/skia` is at another commit, check out the pinned commit in it
+(`git -C third_party/skia fetch --depth 1 origin 95ee33d7ec7791ab9c071675710a14fe6408ae4f` and
+`git -C third_party/skia checkout FETCH_HEAD`) and run the script again.
+
+If Skia's server refuses to fetch the commit by hash, the script falls back to the tip of the branch and stops if that
+is another commit.
+
+## 6. Android app
+
+```
+./gradlew :app:assembleFossDebug     # debug APK, free flavour: no Google libraries at all (what F-Droid builds)
+./gradlew :app:assembleFossRelease   # release APK of the free flavour
+./gradlew :app:assembleCompatDebug   # the Compatible build for Android 8 to 12 (needs tools/build_skia.sh compat first)
+./gradlew :app:assembleCompat32Release   # the Compatible build for 32-bit ARM phones (needs tools/build_skia.sh compat32 first)
+./gradlew -PamAbi=x86_64 :app:assembleFossRelease   # foss for x86_64 Chromebooks (needs tools/build_skia.sh x64 first)
+./gradlew -PamAbi=x86_64 :app:assembleCompatRelease   # compat for x86_64 Chromebooks on Android 9 to 12 (needs tools/build_skia.sh compat-x64 first)
+```
+
+Gradle runs CMake for you (`externalNativeBuild`): it builds the engine (`libamengine.so`), the speech library
+(`libwhisper_jni.so`, from `third_party/whisper.cpp`), the AI runtime (`libabsent_ai.so`, ncnn from `third_party/ncnn`
+with the layer in `third_party/rife_warp`) and RNNoise (from `third_party/rnnoise`), for `arm64-v8a` (`armeabi-v7a` in `compat32`).
+Skia from section 5 must be in place first.
+
+`-PamAbi=x86_64` builds `foss` and `compat` for `x86_64` instead of `arm64-v8a` (the only two values; `compat32` stays 32-bit ARM). Each APK
+holds one ABI, so the phone APK does not grow; the x86_64 APK has the same app id, version, variant and signing key, so either one updates
+the other. CMake picks `out/android-x64` (or `out/android-x64-compat`) by `ANDROID_ABI`. On x86_64 the engine's NEON paths (`absent_bg`) fall back to
+plain C++, `libwhisper_jni.so` uses the x86_64 baseline (SSE4.2) and `libwhisper_jni_fast.so` is built with AVX2, FMA and F16C and is only
+loaded when the CPU has them (`nativeFastCaptionCpu`); ncnn picks its SSE, AVX, FMA and AVX-512 code at run time (its int8 and bf16 variants are off, as on ARM). The Video Downloader stays
+off on x86_64 because its Python bundle is aarch64 only. The emulators on Apple silicon cannot run x86_64: check the APK with
+`tools/apk_check.py` and `tools/api_floor.py --abi x86_64`, and test it on an x86_64 machine (a ChromeOS or x86_64 Android emulator on a PC).
+
+Outputs: `android/build/outputs/apk/<flavour>/<type>/app-<flavour>-<type>.apk`, for example `android/build/outputs/apk/foss/debug/app-foss-debug.apk`. The foss and Compatible flavours add their own offline background remover (`android/src/foss`).
+
+- **Requirements of the app:** Android 13 (API 33) or newer (`minSdk = 33`, tested on Android 16 and 17 and on emulators from Android 13), `targetSdk = 37`,
+  a 64-bit ARM device (or x86_64 with the x86_64 APK), Vulkan 1.1 or OpenGL ES 3.0 (`tools/api_floor.py` lists the Android version the native libraries need).
+- **Release signing:** `assembleFossRelease`, `assembleCompatRelease` and `assembleCompat32Release` sign with the key named in a git-ignored `signing.properties` in the project root
+  (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`); without that file the release APK is left unsigned (`app-<flavour>-release-unsigned.apk`),
+  and you sign it yourself with `apksigner`. Debug builds (`assembleFossDebug`) are signed with the debug key for your own phone. Make a release key with
+  `keytool -genkeypair -v -keystore release.jks -alias absentmotion -keyalg RSA -keysize 4096 -validity 10000` and never
+  commit it.
+- **The Compatible build (`compat`):** the foss build for Android 8 to 12 (`minSdk = 26`), with the same app id, version and signing key, so a
+  phone that later gets Android 13 can install the Latest build over it and keep its projects. It uses the foss sources and assets, links the API 28
+  Skia (CMake option `AM_COMPAT`), and gates the features it leaves out with `Tier` (`shared/kotlin/app/absentmotion/Tier.kt`: every `Feature`
+  says whether it is in Compatible; left-out ones are shown locked with "Needs Android 13 (Latest version)"). Below Android 13 video export renders
+  into its own GPU buffer and copies it into the encoder with OpenGL ES (`encoder_copy.cpp`), because the encoder's input surface cannot always be a
+  Vulkan swapchain there; with the OpenGL back end the engine draws into the encoder's surface directly at every Android version. Below Android 9
+  `Image.getHardwareBuffer` does not exist, so the video decoder gets its frames from the NDK `AImageReader` (`cpp/ndk_images.cpp`,
+  `media/DecodedFrames.kt`), whose `AImage_getHardwareBuffer` works from Android 8; Vulkan 1.1 functions are looked up at run time so the engine
+  still loads where `libvulkan` is older. `tools/compat/build_compat.sh` builds it, `tools/compat/compat_check.sh` checks it (native API floor 26, lint at minSdk 26,
+  `tools/compat/tier_check.py`, publish check), and `tools/compat/compat_emulators.sh [28 30 32]` installs one arm64 emulator image at a time, runs
+  `tools/smoke_check.py` and `tools/compat/export_smoke.py` (GIF and MP4) on it and deletes it again.
+- **The 32-bit Compatible build (`compat32`):** the `compat` build for 32-bit ARM (`armeabi-v7a`, `minSdk = 26`), for phones with a 32-bit system
+  such as many Android Go phones, on any Android from 8. Same sources, features, app id and key; the updater names its file
+  `AbsentMotion-<version>-compatible-32bit.apk`. CMake links `out/android-arm-compat` when `ANDROID_ABI` is `armeabi-v7a`; the NEON paths of
+  `absent_bg` and the faster caption library are arm64 only, so 32-bit runs the portable code. Apple silicon cannot run 32-bit ARM, so emulators
+  there cannot run it: check it with `tools/api_floor.py --abi armeabi-v7a --min 26` and `tools/apk_check.py`, and test it on a real 32-bit phone.
+- **Drawing back ends:** the engine (`shared/cpp/engine.cpp`) starts Skia's Graphite on Vulkan 1.1. When Vulkan cannot start, or when
+  **Settings**, **Graphics** is set to **OpenGL**, it uses Skia's Ganesh on OpenGL ES 3.0 instead (`Backend::kGaneshGL`: an EGL context with a
+  1 x 1 pbuffer, window surfaces for the preview and the encoder, `eglPresentationTimeANDROID` for export timestamps, and
+  `SkSurfaces::WrapAndroidHardwareBuffer` for encoder buffers). Video frames on OpenGL go through `gl_yuv.cpp` when the driver has
+  `GL_EXT_YUV_target`: it samples the raw Y, Cb and Cr and converts them with the stream's own matrix and range, as the Vulkan path does, because some
+  drivers (Adreno 610) read full-range BT.709 as limited range; without the extension the driver converts the frame. `EngineThread.startEngine` tries the preferred back end first and the other second, and
+  the setting restarts the engine through the same path as GPU-loss recovery. Optical flow, Smooth, motion blur and Datamosh take a `GpuContext`
+  (`interpolation.h`) and run on either back end. On OpenGL `Tier.openGl` locks AI Smooth, AI Enhance, AI background removal 2.0 and Optical flow
+  High ("Needs a phone with Vulkan graphics"), and the AI models run on the CPU. Debug builds take `--ez gl true` on the launch intent to force OpenGL
+  on a phone or emulator that has Vulkan. Test OpenGL on an emulator started with `-feature -Vulkan`; `python3 tools/gl_compare.py --work <folder>
+  [--motions <folder of scene XML>]` renders every effect, text preset, test scene, extra scene and blend mode with both back ends on one emulator
+  (debug build, Vulkan available) and writes `report.json` and `worst.png` with the pairs that differ. Known differences: the ray-marched 3D effects
+  (Star Prism, Hex Prism) and noise effects such as VHS differ slightly between GPUs, and the emulators' own drivers get some video colours wrong
+  (OpenGL: BT.709 decoded as BT.601; Vulkan on some images: swapped chroma), which `tools/video_color_check.py` shows.
+- Install with `adb install -r <apk>`. Emulators work for development (arm64 image, Android 13 or newer for the Latest build; the Compatible build also
+  runs on Android 8 to 12 images, through OpenGL when the image has no working Vulkan; `tools/smoke_check.py` renders a still on whichever device `ANDROID_SERIAL` names).
+  `AM_PACKAGE=<app id>` points the device tools at a debug copy installed under another app id (an `applicationIdSuffix`), so a
+  device that has the real app can be tested without touching it.
+
+- **Assets in the APK:** the task `packLanguages` (`android/build.gradle.kts`) copies `shared/assets` into the APK without the translated help pages
+  and effect names, and adds one gzip pack per language (`assets/langpacks/<tag>.pack`), which the app unpacks the first time that language is
+  used. The Compatible flavours use `packLanguagesCompat`, which also lays `android/src/compat/slow-assets` over that copy: the 12 fps versions of
+  the moving effect pictures, which `tools/effect_thumbs.py` writes next to the 30 fps ones in `shared/assets/effects/thumb`. A unit test
+  (`EffectPackTest`) fails when a moving picture has no 12 fps copy, and `tools/apk_check.py` refuses an APK without language packs, with
+  translated pages outside their pack, or a Compatible APK that carries a 30 fps picture. `tools/effect_thumbs.py` saves every picture again at a
+  slightly lower quality when its bytes happen to spell a word that `tools/publish_check.sh` refuses.
+- **Baseline profile:** `android/src/main/baseline-prof.txt` names the app's own classes that run when the app starts, a project opens and the
+  editor is used: one `HSPL<class>*;->**(**)**` rule and one `L<class>*;` rule for each outer class under `app/absentmotion`. The Android
+  Gradle plugin merges it with the profiles the libraries bring and puts the result in the APK (`assets/dexopt/baseline.prof`), and the phone
+  compiles those methods ahead of time instead of interpreting them (in the background after the first start; it costs about 13 MB of storage
+  for compiled code). To refresh the list, install a release build on a rooted emulator, run
+  `adb shell cmd package compile --reset app.absentmotion`, use the app (start it, open a project, play, select a layer, open the panels and the
+  **+** menu, export, visit the Home tabs and Settings), save the profile with `adb shell kill -USR1 <pid>` and dump it:
+  `adb shell cmd package dump-profiles --dump-classes-and-methods app.absentmotion` on Android 14 (it prints where it saved the text), or
+  `profman --dump-classes-and-methods --profile-file=/data/misc/profiles/cur/0/app.absentmotion/primary.prof --apk=<base.apk> --dex-location=<base.apk>`
+  on Android 8.1. Write the two rules for every outer class under `app/absentmotion` in the dump. A rule for a class that no longer exists
+  does nothing.
+
+The signing helper uses each APK's manifest minimum Android version and build-tools 37.0.0. `python3 tools/apk_check.py <apk> [<apk> ...]` checks signatures at every supported API through 37, resource-table and native-library packaging, ELF alignment (16 KB pages on arm64 and x86_64, 4 KB on 32-bit ARM), and matching app IDs, versions and certificates across the supplied APKs. Use `--unsigned` for unsigned CI output and `--libraries <folder>` to check only the 16 KB alignment of built `.so` files. Signed APKs must carry the release certificate pinned as `RELEASE_SIGNER` in `UpdateSource.kt`, the key the in-app updater accepts. This validates packaging; installation and runtime testing on emulators and real devices remain necessary.
+
+## 7. Checking a change, and releases
+
+`tools/check.sh [--quick|--full]` is the check to run before every commit; without an argument it is the full one. Both modes start, in the
+background, the static checks (generated files up to date, translations, effect lint, every effect shader compiles, no comments, the publish
+check, UI contracts, tool regressions, feature parity) and the host tests of the C++ code (cut-out clean-up, text animation, particles, warp,
+easing, and on a Mac with the host Skia build the 3D pieces, crossing layers, Puppet Pin, Crop and Rays checks, which share one engine build in
+`build/render_bench/current` that only compiles what changed). Both also build the three host libraries the unit tests load
+(`tools/audio_dsp.sh --lib`, `tools/pivot.sh --lib`, `tools/tracker_check.sh --lib`). `--quick` then compiles `foss`, runs its unit tests and
+compiles the desktop app. `--full` compiles `foss`, `compat` and `compat32`, runs the foss and compat unit tests and lint, checks the native API
+floor and page alignment of the release libraries (when they are not built it ends as INCOMPLETE with exit code 3) and runs the desktop tests.
+Logs are in `build/check/`. Two runs can work in the same folder at the same time: each keeps its own results, and the second waits
+while the first runs its Gradle build (a second Gradle build in the same folder deletes class files the first one is using). A check that cannot run on this machine prints a line that starts
+with `skipped:` (the shader check needs `tools/sksl_check/build.sh` once, the publish check needs the private word list).
+
+The unit test tasks name what the tests read as inputs (the shared assets and texts, `testdata/`, the 12 fps pictures, the host libraries,
+`version.properties`), so Gradle runs the tests again when one of those changes and skips them otherwise. A test that reads another file needs
+its own `inputs` line in `android/build.gradle.kts` or `pc/build.gradle.kts`.
+
+`tools/publish_check.sh` also refuses a commit or tag that is not signed as `AbsentMotion <noreply@absentmotion.invalid>` (commits made on
+GitHub's website carry GitHub as committer), an attribution line (`Co-Authored-By:`) in a commit or tag message, a link whose target names a
+refused word, and a file name it cannot read back (a quote, a backslash or a control character).
+
+`tools/release.sh [patch|minor|major]` needs `signing.properties`. It bumps `version.properties` (with no argument it keeps the current
+version), runs `tools/check.sh --quick` so that a missing changelog or a failing test stops it before the long builds, builds the release APKs
+of every flavour (signed as described in section 6), runs the full `tools/check.sh` against those builds, and then `tools/api_floor.py`,
+`tools/apk_check.py` and `tools/publish_check.sh --apk` on every APK. When a step fails, a bumped version is put back. Results:
+
+- `build/release/AbsentMotion-<version>-foss.apk` (the `foss` flavour; 4.x Play installs update to this file, see below)
+- `build/release/AbsentMotion-<version>-compatible.apk` (the `compat` flavour, Android 8 to 12)
+- `build/release/AbsentMotion-<version>-compatible-32bit.apk` (the `compat32` flavour, phones with a 32-bit system, Android 8 or newer)
+- `build/release/AbsentMotion-<version>-foss-x86_64.apk` and `-compatible-x86_64.apk` (the same two for `x86_64`: Chromebooks with Intel or AMD chips)
+
+The in-app updater picks the file by flavour and, for `foss` and `compat`, adds `-x86_64` when the device's first ABI (`Build.SUPPORTED_ABIS`)
+is `x86_64`; a release without that file only links to the release page.
+
+The `play` flavour (background removal through Google Play services) was last built for 4.4 and was removed in 5.0. A
+4.3 or 4.4 Play install that finds no `-play.apk` in a release takes the `-foss.apk` instead, and its updater accepts it
+because it carries the variant `foss` and the same signing key. So a release must never carry a `-play.apk` again, and its
+`-foss.apk` must be signed with the release key. Older Play installs (4.2 and earlier) are sent to the release page and
+install the `-foss.apk` by hand.
+
+## 8. CI and reproducible builds
+
+`.github/workflows/build.yml` builds the unsigned `foss` release APK in a Debian trixie container on pull requests,
+manual runs and version tags. It installs JDK 21 and the pinned Android SDK, NDK and CMake, builds Skia from source,
+and uploads the `foss-apk` artifact; a second job builds the compat Skia for 64-bit and 32-bit ARM and the unsigned `compat` and `compat32` APKs (`compat-apk` artifact),
+and a third builds both x86_64 Skias and the unsigned x86_64 `foss` and `compat` APKs (`x86_64-apk` artifact).
+
+Two builds of the same commit must produce byte-identical unsigned APKs. Compare the downloaded artifacts with
+`cmp first.apk second.apk` before a release. Keep the Gradle wrapper, Android plugin, Kotlin, NDK, Skia and native
+source pins stable. The build disables VCS and dependency metadata and maps native source paths to stable values;
+changes to those settings can break reproducibility. Release signing is a separate step.
+
+Device scripts use only the device named by `ANDROID_SERIAL` (default `emulator-5554`). They are optional for the
+build; use an emulator for development checks. `python3 tools/device_matrix.py checks --serial emulator-5556 --apk <debug apk>` runs
+the smoke, memory-pressure, engine, device export, audio export, export and speed checks on one emulator and writes a JSON
+report outside the repository; `status`, `create`, `boot`, `run`, `stop` and `clean` manage a matrix of arm64 emulators (Android 9,
+13, 14, 16, a tablet and Android 17 with 16 KB memory pages). `create` stops when less than 15 GB would stay free. RNNoise is still vendored and its upstream commit is not recorded.
+
+## 9. Desktop app (macOS and Windows; Linux built, desktop use untested)
+
+The desktop app compiles `shared/kotlin` with Compose Multiplatform (JDK 21) in its own Gradle build in `pc/`. The native
+library comes from `pc/native/CMakeLists.txt` plus the part for the running system (`macos/native/macos.cmake`,
+`windows/native/windows.cmake` or `linux/native/linux.cmake`); `pc`'s Gradle build runs `macos/build.sh`, `windows/build.ps1`
+or `linux/build.sh` for it. It needs Skia built for that system (section 5) and FFmpeg's libraries.
+
+    cd pc
+    ./gradlew run                    # start the app
+    ./gradlew test                   # desktop tests
+    ./gradlew createDistributable    # AbsentMotion.app / the Windows or Linux app folder
+
+**Linux.** `linux/Dockerfile` is the build machine: Ubuntu 24.04 with Temurin 21.0.13, clang 18, CMake, Ninja, patchelf,
+`dpkg-deb`, Xvfb, Mesa's software Vulkan driver (so the tests also run the Vulkan path) and appimagetool 1.9.1 with the AppImage
+type 2 runtime; every download is checked against its SHA-256. Use it on a Mac with Docker (arm64 natively; x64 with
+`--platform linux/amd64`, much slower) or run the same steps on an Ubuntu 24.04 machine. Without the Android SDK, point
+`AM_ANDROID_API` at the `android-api.jar` that `./gradlew -p pc androidApiJar` makes where the SDK is installed. FFmpeg is the
+BtbN `linux64-gpl-shared-9.0` or `linuxarm64-gpl-shared-9.0` build (`THIRD_PARTY_NOTICES.md` has the file names and SHA-256),
+unpacked:
+
+    docker build -t am-linux linux
+    docker run --rm -v "$PWD:/src" -w /src -e AM_ANDROID_API=/src/<android-api.jar> am-linux sh -c '
+        linux/skia.sh &&
+        FFMPEG_PREFIX=/src/<ffmpeg> ./gradlew -p pc test createDistributable packageDeb &&
+        linux/package.sh <version>'
+
+`linux/skia.sh` builds Skia with `linux/skia-args.gn` (Ganesh and Vulkan, no OpenGL, fontconfig, Skia's own FreeType) into
+`third_party/skia/out/linux-arm64` or `out/linux-x64` (about 175 MB; about 25 minutes in Docker on an Apple-silicon Mac).
+It needs the pinned Skia source with its dependencies and the patch, as `tools/build_skia.sh` leaves `third_party/skia` (or
+any such checkout through `SKIA_DIR`; the source can be read-only when `SKIA_OUT` points elsewhere).
+The native library links libstdc++ statically and `linux/native/glibc_compat.c` maps the C23 `strtol` and `scanf` names,
+`fmod` and `arc4random` that Ubuntu 24.04's headers pick to older glibc symbols, so the build needs only glibc 2.35 (Ubuntu
+22.04, Debian 12 or newer). `linux/package.sh` writes `pc/build/linux-release/AbsentMotion-<version>-linux-<arm64|x86_64>.deb`,
+`.AppImage` and `.tar.gz` (`linux/README.md` lists what it changes in the Compose `.deb` and what the start script
+`linux/start.sh` and the per-user `linux/install.sh` in the `.tar.gz` do). The `.deb` installs to `/opt/absentmotion`
+with a menu entry and the `.absproj` file type. The packaging tasks always run again, because Compose does not notice
+when only the native library changed. `linux/distro_check.sh` (needs Docker) installs the `.tar.gz` on seven distributions
+and checks that it renders, exports and starts there.
+
+**Start-up class archive.** The Java runtime that Compose links in has no class-data-sharing archive,
+so `createRuntimeImage` makes one in the runtime image itself, which `createDistributable`, `packageMsi` and `packageDeb`
+all copy: it copies the build JDK's `java` launcher into the image for a moment, runs it with the app's GC options and
+`-Xshare:dump`, which writes `classes_nocoops.jsa` (the name the JVM looks for with ZGC) next to the runtime's
+`libjvm`/`jvm.dll`, then removes the launcher again; the log line `start-up archive: ...` shows its size. On top of that
+the app's own classes go into a per-user archive the JVM writes when the app quits the first time
+(`-XX:+AutoCreateSharedArchive`): on Windows `app-<key>.jsa` in the install folder, named in the app's `jvmArgs` (the key
+is the build time in hex, so every build gets a fresh name, and the app deletes older ones), on Linux in
+`~/.cache/absentmotion` through `linux/start.sh`. A JDK 21 dynamic archive is only made when none exists and is not
+rebuilt when it no longer matches, which is why the file name carries the key. A Mac build for a release
+(`-Ptarget=macos-<arch>`) gets the same base archive in its runtime image and no app archive, because the signed app must not be
+written to; `installMac` keeps making its own full archive in the installed copy. The runtime image also carries `jdk.localedata`, so dates use each language's own month names and order.
+
+**Timing tests.** `AM_TIMING=1 ./gradlew test --tests app.absentmotion.pc.ExportTimingTest` exports a 10-second 1080x1920
+scene (a video, a picture and four effects) and prints frames per second for each stage (engine drawing and read-back,
+pipe to FFmpeg, colour conversion, the hardware and the software encoder, the whole export) and the export screen's time
+estimate; `AM_TIMING_SECONDS` shortens the scene and `AM_SOFTWARE_RENDER=1` draws on the CPU. `AM_TIMING=1 ./gradlew test
+--tests app.absentmotion.pc.FirstProjectTimingTest` opens two new projects from the home screen and prints the time to the
+editor's first frame (`AM_TIMING_PRELOAD=off` turns the background start-up preload off, `AM_TIMING_IDLE_MS` sets how long
+the home screen waits first). Without `AM_TIMING` both are skipped.
+
+Tests: run them as a normal user (as root the read-only-folder test cannot make saving fail) with `pc/build` on a file system
+that honours folder permissions (a Docker Desktop bind mount does not; a `tmpfs` mount on `pc/build/save-failed-data` does).
+`DeskParityRoundTest.filesFromTheSystemOpenOrImport` hangs headless on Linux; leave it out by passing `--tests` for every other
+class and method. Without any Vulkan driver the engine draws on the CPU, and frame blending, optical-flow smoothing, motion
+blur smoothing and Datamosh fail (they need a GPU), so install `mesa-vulkan-drivers` for the tests and run them with
+`AM_VULKAN_CPU=1` (the engine skips a software Vulkan driver otherwise) and a UTF-8 locale (`LC_ALL=C.UTF-8`; without one, file
+names outside ASCII fail). Two sound tests need a
+real sound card and one AAC test expects the bit rate of the macOS and Windows encoders; FFmpeg's own `aac` encoder, the
+only one on Linux, writes far fewer bits for the quiet test clip.
+
+
+## 10. Updating the desktop apps
+
+The desktop app updates itself in one step: Settings > Updates > Check for Update, then Download update, then Install and
+restart. It saves the open project, closes, replaces itself and opens again. Nothing is installed through a wizard.
+
+| System | Installed by | What the update installs | How it is applied |
+|---|---|---|---|
+| Windows | per-user MSI | `AbsentMotion-<v>-windows-x64.msi` | a hidden PowerShell script waits for the app to exit, runs `msiexec /i ... INSTALLDIR=<current folder> /passive /norestart` (a major upgrade otherwise moves a custom install back to the default folder), then starts the launcher, found through the Uninstall entry if the old path is gone |
+| macOS | DMG, app in a user-writable folder | `AbsentMotion-<v>-macos-<arch>-update.zip` (the signed `.app`, made with `ditto -c -k --keepParent`) | the app is unpacked next to the installed one, checked with `codesign --verify`, then a shell script swaps the folders and runs `open` |
+| Linux, user install (`install.sh`) | `.tar.gz` | `AbsentMotion-<v>-linux-<arch>.tar.gz` | the folder `~/.local/opt/absentmotion` is swapped and `install.sh` refreshes the menu entry |
+| Linux AppImage | `.AppImage` | `AbsentMotion-<v>-linux-<arch>.AppImage` | the file is replaced in place |
+| Linux `.deb` | package | `AbsentMotion-<v>-linux-<arch>.deb` | after the app has closed, `pkexec apt-get install -y <file>` asks for the password in the system dialog and the app is started again; without `pkexec` the file is opened for the package installer |
+| macOS in a protected folder, Windows without a launcher path | manual | the usual installer, opened for the user | as before (open the file) |
+| Android | APK | `AbsentMotion-<v>-foss.apk` and the other APKs | `PackageInstaller` with `USER_ACTION_NOT_REQUIRED`: no dialog on Android 12+ when the OS allows it, a notification opens the app afterwards |
+
+The helper scripts are small and live in the app (`DeskUpdateInstall.kt`), so every release carries the updater that installs
+the next one. A release that needs a newer updater sets `minUpdater` in the signed list; older apps then tell the user to
+download the installer instead.
+
+**Trust.** Desktop updates are accepted only when `update-manifest.json` and `update-manifest.json.sig` are in the same
+release and the signature verifies against a public key built into the app (`UPDATE_KEYS` in `DeskUpdateTrust.kt`). The list
+holds the size and SHA-256 of every desktop file; the downloaded file must match it and the GitHub asset digest. A desktop release without the list is refused for every file kind. Android does
+not use the list: the system checks the APK signature. The private key is a raw Ed25519 key kept outside the repository and
+backed up offline; losing it means every installed desktop copy must be reinstalled by hand once.
+
+```
+java tools/UpdateSign.java keygen <private-key-file> <public-key-file>
+java tools/UpdateSign.java manifest <version> <min-updater> <private-key-file> <out-dir> <desktop-file>...
+java tools/UpdateSign.java verify <out-dir>/update-manifest.json <out-dir>/update-manifest.json.sig <public-key-file>
+```
+
+Run `manifest` last, after every desktop file of the release is final (the MSI, both macOS update zips and both DMGs, the `.deb`s,
+AppImages and tarballs; a file that is missing from the list cannot be downloaded by the app), and upload both output files with the release. Key rotation: ship an app with both public keys in `UPDATE_KEYS`,
+sign with the new key once most users have it.
+
+**Testing an update without a release.** A loopback-only test feed is read from `-Dam.updateFeed=http://127.0.0.1:<port>` (set
+through `JAVA_TOOL_OPTIONS` for a packaged app). The feed is a folder with `releases.json` (a GitHub-style list, asset URLs
+`http://127.0.0.1:<port>/download/<tag>/<file>`) and `download/<tag>/` holding the files and the signed list. A throwaway key
+can be trusted for that feed only with `-Dam.updateKey=<base64 public key>`; neither property has any effect on a normal install.
+Android debug builds read `updatefixture` from the intent (`TestHooks`).
