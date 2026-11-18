@@ -2420,4 +2420,27 @@
     <string name="desk_reveal_finder">Tampilkan di Finder</string>
     <string name="desk_reveal_explorer">Tampilkan di Explorer</string>
     <string name="desk_reveal_folder">Tampilkan di Folder</string>
+    <string name="tools_paste_preset">Tempel Preset</string>
+    <string name="tools_paste_preset_about">Impor XML yang ditempel atau tautan unduhan langsung XML/paket.</string>
+    <string name="tools_upload_xml">Upload XML</string>
+    <string name="tools_upload_xml_about">Render XML Alight Motion atau Aevix dan simpan ke Preset Saya.</string>
+    <string name="preset_import_hint">Run mengimpor seluruh komposisi, merender preview, dan menyimpannya ke Preset Saya. Buka preset sebagai proyek untuk memutar, mengedit, dan mengekspor video.</string>
+    <string name="preset_import_clipboard">Tempel dari clipboard</string>
+    <string name="preset_import_paste_hint">Tempel XML atau tautan unduhan HTTPS di sini</string>
+    <string name="preset_import_choose_file">Pilih XML atau paket</string>
+    <string name="preset_import_file_none">Belum ada file dipilih</string>
+    <string name="preset_import_formats">Mendukung XML dan paket proyek. XML tunggal tidak menyertakan foto, video, audio, atau font. Aset yang hilang dan efek yang belum didukung akan dilaporkan setelah impor.</string>
+    <string name="preset_import_run">Run</string>
+    <string name="preset_import_running">Mengimpor dan merender preview preset…</string>
+    <string name="preset_import_failed">Impor preset gagal: %1$s</string>
+    <string name="preset_import_empty_scene">Preset ini tidak berisi layer.</string>
+    <string name="preset_import_invalid">Tempel XML scene atau tautan unduhan HTTPS langsung.</string>
+    <string name="preset_import_too_large">XML yang ditempel melebihi batas 16 MB.</string>
+    <string name="preset_import_insecure">Gunakan tautan HTTPS tanpa nama pengguna atau kata sandi.</string>
+    <string name="preset_import_link_download">Tautan ini membuka halaman web, bukan XML atau paket proyek. Untuk Alight link yang memerlukan aplikasi atau akun Alight Motion, ekspor XML/paketnya terlebih dahulu lalu pilih Upload XML.</string>
+    <string name="preset_import_network">Preset tidak dapat diunduh. Periksa koneksi dan gunakan tautan langsung XML/paket.</string>
+    <string name="preset_import_download_large">Paket unduhan melebihi batas 256 MB. Gunakan Upload XML untuk memilih file lokal.</string>
+    <string name="preset_import_done">%1$d preset disimpan</string>
+    <string name="preset_import_composition">Komposisi · %1$d layer</string>
+    <string name="preset_import_warning">Periksa catatan kompatibilitas ini. Efek atau aset yang tercantum mungkin perlu diganti sebelum ekspor.</string>
 </resources>

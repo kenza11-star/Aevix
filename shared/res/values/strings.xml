@@ -2475,4 +2475,27 @@
     <string name="desk_reveal_finder">Show in Finder</string>
     <string name="desk_reveal_explorer">Show in Explorer</string>
     <string name="desk_reveal_folder">Show in Folder</string>
+    <string name="tools_paste_preset">Paste Preset</string>
+    <string name="tools_paste_preset_about">Import pasted XML or a direct XML/package download link.</string>
+    <string name="tools_upload_xml">Upload XML</string>
+    <string name="tools_upload_xml_about">Render Alight Motion or Aevix XML and save it in My Presets.</string>
+    <string name="preset_import_hint">Run imports the full composition, renders a preview, and saves it in My Presets. Open the preset as a project to play, edit, and export video.</string>
+    <string name="preset_import_clipboard">Paste from clipboard</string>
+    <string name="preset_import_paste_hint">Paste XML or an HTTPS download link here</string>
+    <string name="preset_import_choose_file">Choose XML or package</string>
+    <string name="preset_import_file_none">No file selected</string>
+    <string name="preset_import_formats">XML and project packages are supported. A standalone XML does not include its photos, videos, audio, or fonts. Missing assets and unsupported effects are reported after import.</string>
+    <string name="preset_import_run">Run</string>
+    <string name="preset_import_running">Importing and rendering the preset preview…</string>
+    <string name="preset_import_failed">Preset import failed: %1$s</string>
+    <string name="preset_import_empty_scene">This preset contains no layers.</string>
+    <string name="preset_import_invalid">Paste scene XML or a direct HTTPS download link.</string>
+    <string name="preset_import_too_large">The pasted XML exceeds the 16 MB limit.</string>
+    <string name="preset_import_insecure">Use an HTTPS link without a username or password.</string>
+    <string name="preset_import_link_download">This link opens a web page instead of an XML or project package. For an Alight link that requires the Alight Motion app or account, export its XML/package first, then choose Upload XML.</string>
+    <string name="preset_import_network">The preset could not be downloaded. Check the connection and use a direct XML/package link.</string>
+    <string name="preset_import_download_large">The downloadable package exceeds the 256 MB limit. Use Upload XML to select a local file.</string>
+    <string name="preset_import_done">%1$d preset(s) saved</string>
+    <string name="preset_import_composition">Composition · %1$d layers</string>
+    <string name="preset_import_warning">Review these compatibility notes. The listed effects or assets may need replacing before export.</string>
 </resources>

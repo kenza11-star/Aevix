@@ -97,7 +97,7 @@ fun PresetScreen(state: EditorState) {
     val scope = rememberCoroutineScope()
     var rev by remember { mutableIntStateOf(0) }
     val loaded by produceState<List<SavedPreset>?>(null, rev) { value = withContext(Dispatchers.IO) { store.list() } }
-    val presets = loaded.orEmpty()
+    val presets = loaded.orEmpty().filterNot { it.composition }
     var chosen by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<SavedPreset?>(null) }
     var deleting by remember { mutableStateOf<SavedPreset?>(null) }

@@ -38,7 +38,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,12 +79,15 @@ private val Grey get() = Am.HomeDim
 private val FactText get() = Am.HomeDim
 
 @Composable
-fun TemplatesTab(version: Int, onTemplate: (String) -> Unit, onProject: (Scene) -> Unit, modifier: Modifier = Modifier, query: String = "") {
+fun TemplatesTab(
+    version: Int, onTemplate: (String) -> Unit, onProject: (Scene) -> Unit, modifier: Modifier = Modifier, query: String = "",
+    section: Int = 0, onSection: (Int) -> Unit = {},
+) {
     val context = LocalContext.current
     val templates = remember { TemplateStore(context) }
     val presets = remember { PresetStore(context) }
     val scope = rememberCoroutineScope()
-    var sub by rememberSaveable { mutableIntStateOf(0) }
+    val sub = section
     var rev by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf<String?>(null) }
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -99,8 +101,8 @@ fun TemplatesTab(version: Int, onTemplate: (String) -> Unit, onProject: (Scene) 
     Column(modifier.fillMaxSize()) {
         Spacer(Modifier.height(if (wide) 8.dp else 24.dp))
         Row(Modifier.padding(start = 16.dp), horizontalArrangement = Arrangement.spacedBy(if (wide) 8.dp else 12.dp)) {
-            SubChip(stringResource(R.string.template_my_templates), sub == 0, wide) { sub = 0; menu = null }
-            SubChip(stringResource(R.string.template_my_presets), sub == 1, wide) { sub = 1; menu = null }
+            SubChip(stringResource(R.string.template_my_templates), sub == 0, wide) { onSection(0); menu = null }
+            SubChip(stringResource(R.string.template_my_presets), sub == 1, wide) { onSection(1); menu = null }
         }
         Spacer(Modifier.height(13.dp))
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -134,8 +136,16 @@ fun TemplatesTab(version: Int, onTemplate: (String) -> Unit, onProject: (Scene) 
                         )
                     }
                     val presetCard: @Composable (SavedPreset) -> Unit = { p ->
-                        Card(Modifier.height(64.dp), onClick = null) {
-                            Text(p.title, Modifier.weight(1f).padding(start = 16.dp), color = Am.Navy, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Card(Modifier.heightIn(min = 88.dp), onClick = if (p.composition) ({ onProject(p.scene) }) else null) {
+                            Box(Modifier.padding(8.dp).size(64.dp).clip(RoundedCornerShape(8.dp)).checkerboard(5.dp), contentAlignment = Alignment.Center) {
+                                val image = rememberFileBitmap(p.thumbnail, p.modified)
+                                if (image != null) Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                                else Icon(HomeIcons.TemplatesTab, null, Modifier.size(24.dp), tint = Grey)
+                            }
+                            Column(Modifier.weight(1f).padding(start = 8.dp, top = 8.dp, bottom = 8.dp)) {
+                                Text(p.title, color = Am.Navy, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (p.composition) Text(stringResource(R.string.preset_import_composition, p.scene.layers.size), color = Grey, fontSize = 12.sp)
+                            }
                             Menu(
                                 menu == p.id, { menu = if (it) p.id else null },
                                 stringResource(R.string.rename) to HomeIcons.Pencil to { menu = null; renaming = p.id to p.title },

@@ -270,7 +270,7 @@ class MainActivity : ComponentActivity() {
                                 store, settings, onOpen = ::open, onExport = ::exportFromList,
                                 imported = imported, onImportShown = { imported = emptyList() }, onImportFile = { importUris(listOf(it)) },
                                 onTemplate = { id -> if (!opening && !openingProject) { openingProject = true; openJob = lifecycleScope.launch { try { if (engineWorks()) editingTemplate = id } finally { openingProject = false } } } }, onTemplateProject = ::projectFromTemplate,
-                                onHistory = { historyFor = Triple(it.id, it.title, it.damaged) }, onCollect = ::collectMedia, changes = projectsChanged,
+                                onHistory = { historyFor = Triple(it.id, it.title, it.damaged) }, onCollect = ::collectMedia, changes = projectsChanged, presetEngine = engine,
                             )
                         }
                         editingTemplate?.let { id ->

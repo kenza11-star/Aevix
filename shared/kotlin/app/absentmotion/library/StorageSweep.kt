@@ -22,8 +22,16 @@ internal fun sweepStorage(files: File, shared: List<File>, now: Long = System.cu
     for (dir in File(files, "templates").listFiles { f -> f.isDirectory }.orEmpty()) {
         if (!File(dir, "scene.xml").exists() && old(dir) && dir.deleteRecursively()) removed++
     }
+    val presets = File(files, "presets")
+    for (dir in presets.listFiles { f -> f.isDirectory && f.name.endsWith(".media") }.orEmpty()) {
+        if (!File(presets, dir.name.removeSuffix(".media") + ".xml").exists() && old(dir) && dir.deleteRecursively()) removed++
+    }
+    for (picture in presets.listFiles { f -> f.isFile && f.extension == "png" }.orEmpty()) {
+        if (!File(presets, picture.nameWithoutExtension + ".xml").exists() && old(picture) && picture.delete()) removed++
+    }
     val owners = File(files, "media").listFiles { f -> f.isDirectory && !File(f, ImportMarker).exists() }.orEmpty().toList() +
-        File(files, "templates").listFiles { f -> f.isDirectory }.orEmpty().map { File(it, "media") }.filter { it.isDirectory }
+        File(files, "templates").listFiles { f -> f.isDirectory }.orEmpty().map { File(it, "media") }.filter { it.isDirectory } +
+        presets.listFiles { f -> f.isDirectory && f.name.endsWith(".media") }.orEmpty().toList()
     val candidates = (owners.flatMap { it.listFiles().orEmpty().toList() } + shared.flatMap { it.listFiles { f -> f.isFile }.orEmpty().toList() })
         .filter(::old).toMutableList()
     if (candidates.isEmpty()) return removed

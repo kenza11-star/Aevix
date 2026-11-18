@@ -60,6 +60,9 @@ class MediaAccess private constructor(private val filesDir: File?, private val o
             when (inside?.getName(0)?.toString()) {
                 "media" -> inside.nameCount > 1
                 "templates" -> inside.nameCount > 3 && inside.getName(2).toString() == "media"
+                "presets" -> inside.nameCount > 2 && inside.getName(1).toString().let {
+                    it.endsWith(".media") && ProjectId.matches(it.removeSuffix(".media"))
+                }
                 else -> false
             }
         } catch (e: Exception) {

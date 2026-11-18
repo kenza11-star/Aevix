@@ -180,10 +180,13 @@ fun HomeScreen(
     onHistory: (ProjectInfo) -> Unit = {},
     onCollect: (String) -> Unit = {},
     changes: Int = 0,
+    presetEngine: app.absentmotion.engine.EngineThread? = null,
 ) {
     var projects by remember { mutableStateOf<List<ProjectInfo>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     var version by remember { mutableIntStateOf(0) }
+    var templateSection by rememberSaveable { mutableIntStateOf(0) }
+    var presetReport by remember { mutableStateOf<app.absentmotion.library.PresetImportResult?>(null) }
     var tab by rememberSaveable { mutableIntStateOf(lastTab) }
     var page by rememberSaveable { mutableIntStateOf(lastPage) }
     SideEffect { lastTab = tab; lastPage = page }
@@ -226,8 +229,14 @@ fun HomeScreen(
                 TopBar(onMenu = { scope.launch { drawer.open() } }, search, page, { search = it }, settings)
                 val fill = Modifier.weight(1f)
                 if (page == 3) CommunitySoon(fill)
-                else if (page == 2) ToolsTab(fill, store, settings) { id -> version++; onOpen(id) }
-                else if (page == 1) TemplatesTab(version, onTemplate, onTemplateProject, fill, query) else ProjectsPane(
+                else if (page == 2) ToolsTab(fill, store, settings, presetEngine, onPresetsSaved = { result ->
+                    version++
+                    templateSection = 1
+                    page = 1
+                    search = null
+                    presetReport = result.takeIf { it.reports.any { report -> report.sections.isNotEmpty() } }
+                }) { id -> version++; onOpen(id) }
+                else if (page == 1) TemplatesTab(version, onTemplate, onTemplateProject, fill, query, templateSection, { templateSection = it }) else ProjectsPane(
                     Modifier.weight(1f), shown, loaded, tab, { tab = it }, settings, version, onOpen, onExport, query,
                     onUpload = { picker.launch(arrayOf("text/xml", "application/xml", "application/zip", "application/octet-stream")) },
                     onDuplicate = { id -> if (!duplicating) {
@@ -249,6 +258,7 @@ fun HomeScreen(
             }
             BottomBar(onNew = newProject, page, { page = it; if (it >= 2) search = null }, Modifier.align(Alignment.BottomCenter), navInset, wide, settings.vibration)
             if (toReport.isNotEmpty()) ImportDialog(toReport, onDismiss = onImportShown, onOpen = { onImportShown(); toReport.first().let { if (it.template) onTemplate(it.id) else onOpen(it.id) } })
+            presetReport?.let { PresetImportReportDialog(it) { presetReport = null } }
             Presence(creating) {
                 NewProjectSheet(
                     store, settings, projects.map { it.title }, initialElement, opening, onClose = { creating = false },

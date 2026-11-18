@@ -86,6 +86,8 @@ import app.absentmotion.export.AppFolder
 import app.absentmotion.export.formatBytes
 import app.absentmotion.library.AppSettings
 import app.absentmotion.library.ProjectStore
+import app.absentmotion.library.PresetImportResult
+import app.absentmotion.engine.EngineThread
 import app.absentmotion.media.mediaDeclaration
 import app.absentmotion.model.Scene
 import app.absentmotion.platform.PlatformFeatures
@@ -124,7 +126,10 @@ private var installPercent by mutableStateOf<Int?>(null)
 private val downloader = videoDownloader()
 
 @Composable
-internal fun ToolsTab(modifier: Modifier, store: ProjectStore, settings: AppSettings, onOpen: (String) -> Unit) {
+internal fun ToolsTab(
+    modifier: Modifier, store: ProjectStore, settings: AppSettings, presetEngine: EngineThread? = null,
+    onPresetsSaved: (PresetImportResult) -> Unit = {}, onOpen: (String) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val revision by downloader.revision.collectAsState()
@@ -185,20 +190,20 @@ internal fun ToolsTab(modifier: Modifier, store: ProjectStore, settings: AppSett
             }
         }
     }
+    val pasteCard: @Composable (Modifier) -> Unit = { m ->
+        ToolCard(HomeIcons.Notes, stringResource(R.string.tools_paste_preset), stringResource(R.string.tools_paste_preset_about), modifier = m) { open = 6 }
+    }
+    val xmlCard: @Composable (Modifier) -> Unit = { m ->
+        ToolCard(HomeIcons.Upload, stringResource(R.string.tools_upload_xml), stringResource(R.string.tools_upload_xml_about), modifier = m) { open = 7 }
+    }
+    val cards = if (presetEngine == null) listOf(compressCard, trimCard, extractCard, gifCard, downloaderCard)
+        else listOf(pasteCard, xmlCard, compressCard, trimCard, extractCard, gifCard, downloaderCard)
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = if (PlatformFeatures.desktop) 28.dp else 16.dp)) {
         Spacer(Modifier.height(24.dp))
-        if (PlatformFeatures.desktop) ToolGrid(listOf(compressCard, trimCard, extractCard, gifCard, downloaderCard))
-        else if (LocalWide.current || app.absentmotion.ui.editor.LocalTablet.current) ToolGrid(listOf(compressCard, trimCard, extractCard, gifCard, downloaderCard))
-        else {
-            compressCard(Modifier)
-            Spacer(Modifier.height(12.dp))
-            trimCard(Modifier)
-            Spacer(Modifier.height(12.dp))
-            extractCard(Modifier)
-            Spacer(Modifier.height(12.dp))
-            gifCard(Modifier)
-            Spacer(Modifier.height(12.dp))
-            downloaderCard(Modifier)
+        if (PlatformFeatures.desktop || LocalWide.current || app.absentmotion.ui.editor.LocalTablet.current) ToolGrid(cards)
+        else cards.forEachIndexed { index, card ->
+            if (index > 0) Spacer(Modifier.height(12.dp))
+            card(Modifier)
         }
         Spacer(Modifier.height(28.dp))
         ToolsFooter()
@@ -218,6 +223,9 @@ internal fun ToolsTab(modifier: Modifier, store: ProjectStore, settings: AppSett
         3 -> TrimScreen { open = 0 }
         4 -> ExtractAudioScreen { open = 0 }
         5 -> GifScreen { open = 0 }
+        6, 7 -> presetEngine?.let { engine ->
+            PresetImportScreen(open == 6, store, engine, onSaved = { result -> open = 0; onPresetsSaved(result) }) { open = 0 }
+        }
     }
 }
 
