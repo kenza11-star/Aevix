@@ -2,6 +2,7 @@ package app.absentmotion.library
 
 import app.absentmotion.platform.Context
 import app.absentmotion.platform.Uri
+import app.absentmotion.model.mediaUris
 import app.absentmotion.model.Layer
 import app.absentmotion.model.Scene
 import kotlinx.coroutines.currentCoroutineContext
@@ -36,12 +37,18 @@ class PresetStore(private val dir: File, private val open: (String) -> InputStre
         return id
     }
 
-    suspend fun addComposition(scene: Scene, render: suspend (Scene, Int, File) -> Boolean): SavedPreset {
+    suspend fun addComposition(scene: Scene, render: suspend (Scene, Int, File) -> Boolean): SavedPreset = addComposition(scene, false, render)
+
+    suspend fun addComposition(scene: Scene, requireMedia: Boolean, render: suspend (Scene, Int, File) -> Boolean): SavedPreset {
         require(scene.layers.isNotEmpty())
         val id = UUID.randomUUID().toString()
         try {
-            val stored = TemplateStore(dir, open).localize(scene, File(dir, "$id.media"))
+            val mediaDir = File(dir, "$id.media").canonicalFile.toPath()
+            val stored = TemplateStore(dir, open).localize(scene, mediaDir.toFile())
                 .let { Scene(it.node.with("aevixPreset", "composition")) }
+            if (requireMedia && stored.node.mediaUris().any { uri ->
+                    runCatching { File(URI(uri)).canonicalFile.toPath().startsWith(mediaDir) }.getOrDefault(false).not()
+                }) throw IOException("The replacement media could not be copied. Choose the media again.")
             val picture = thumbnail(id)
             picture.parentFile?.mkdirs()
             if (!render(stored, presetPreviewTime(stored), picture) || !picture.isFile || picture.length() == 0L) {

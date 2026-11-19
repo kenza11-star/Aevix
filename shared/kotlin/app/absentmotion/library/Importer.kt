@@ -298,6 +298,15 @@ class Importer(
         }
     }
 
+    internal fun missingMedia(scene: Scene): List<String> = scene.node.mediaUris().filterNot { access.allows(it) && exists(it) }
+
+    internal fun refreshMediaReport(previous: ImportReport, scene: Scene): ImportReport {
+        val heading = txt(R.string.library_report_media)
+        val names = missingMedia(scene).map { uri -> scene.media(uri)?.filename?.takeIf { it.isNotEmpty() } ?: uri.substringAfterLast('/') }
+        return previous.copy(sections = previous.sections.filterNot { it.first == heading } +
+            if (names.isEmpty()) emptyList() else listOf(heading to names.map(::reportText)))
+    }
+
     private fun report(scene: Scene, missing: List<String>, migrated: EffectMigration.Result?): List<Pair<UiText, List<UiText>>> {
         val layers = allLayers(scene.node).toList()
         val unknown = sortedSetOf<String>()

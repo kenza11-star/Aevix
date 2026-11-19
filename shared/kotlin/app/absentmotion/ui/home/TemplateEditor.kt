@@ -72,8 +72,11 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import app.absentmotion.engine.EngineThread
 import app.absentmotion.engine.PreviewView
 import app.absentmotion.library.AppSettings
+import app.absentmotion.library.MediaAccess
+import app.absentmotion.library.MediaRelink
 import app.absentmotion.library.TemplateStore
 import app.absentmotion.media.mediaDeclaration
+import app.absentmotion.model.mediaUris
 import app.absentmotion.model.Layer
 import app.absentmotion.model.loopStart
 import app.absentmotion.model.MediaDeclaration
@@ -86,6 +89,7 @@ import app.absentmotion.ui.editor.ChromeIcons
 import app.absentmotion.ui.export.ExportIcons
 import app.absentmotion.ui.editor.TimelineMath
 import app.absentmotion.ui.theme.Am
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -114,7 +118,7 @@ private fun XmlNode.mapLayers(change: (XmlNode) -> XmlNode): XmlNode = copy(
 
 private fun XmlNode.int(name: String, default: Int) = this[name]?.toIntOrNull() ?: default
 
-internal class Slot(val uri: String, val video: Boolean, val length: Int, val start: Int, val end: Int, val mode: MediaFillMode, val loop: Boolean)
+internal class Slot(val uri: String, val video: Boolean, val length: Int, val start: Int, val end: Int, val mode: MediaFillMode, val loop: Boolean, val audio: Boolean = false)
 
 internal class Choice(val media: MediaDeclaration?, val trim: Int, val mode: MediaFillMode)
 
@@ -126,43 +130,53 @@ private fun XmlNode.sourceEnd() = app.absentmotion.model.VideoTiming(Layer(this)
 
 private fun XmlNode.sourceStart() = Layer(this).loopStart ?: int("inTime", 0)
 
+private fun XmlNode.slotUri(): String? = if (name == "audio") this["src"] else if (this["fillType"] == "media") this["fillImage"] ?: this["fillVideo"] else null
+
 internal fun slotsOf(scene: Scene): List<Slot> =
-    layersOf(scene.node).filter { (it, _) -> it["fillType"] == "media" && (it["fillImage"] ?: it["fillVideo"]) != null }
+    layersOf(scene.node).filter { (it, _) -> it.slotUri() != null }
         .sortedWith(compareBy({ (it, at) -> it.int("startTime", 0) + at }, { (it, at) -> it.int("endTime", 0) + at }))
-        .groupBy { (it, _) -> it["fillImage"] ?: it["fillVideo"]!! }
+        .groupBy { (it, _) -> it.slotUri()!! }
         .map { (uri, pairs) ->
             val layers = pairs.map { it.first }
-            val video = layers.first()["fillImage"] == null
-            val length = if (video) layers.maxOf { minOf(it.int("outTime", Int.MAX_VALUE), it.sourceEnd()) } - layers.minOf { it.sourceStart() }
+            val audio = layers.all { it.name == "audio" }
+            val video = !audio && layers.any { it["fillVideo"] != null }
+            val length = if (video || audio) layers.maxOf { minOf(it.int("outTime", Int.MAX_VALUE), it.sourceEnd()) } - layers.minOf { it.sourceStart() }
                 else layers.maxOf { it.span() }
             Slot(uri, video, length, pairs.minOf { (it, at) -> it.int("startTime", 0) + at }, pairs.maxOf { (it, at) -> it.int("endTime", 0) + at },
-                MediaFillMode.entries.firstOrNull { it.xml == layers.first()["mediaFillMode"] } ?: MediaFillMode.Fill, video && layers.any { it["loop"] == "true" })
+                MediaFillMode.entries.firstOrNull { it.xml == layers.first()["mediaFillMode"] } ?: MediaFillMode.Fill, (video || audio) && layers.any { it["loop"] == "true" }, audio)
         }
 
 internal fun applied(template: Scene, slots: List<Slot>, choices: Map<String, Choice>): Scene {
-    var node = template.node
-    for (slot in slots) {
-        val choice = choices[slot.uri] ?: continue
-        val old = template.media(slot.uri)
-        val minIn = layersOf(template.node).map { it.first }.filter { (it["fillImage"] ?: it["fillVideo"]) == slot.uri }.minOf { it.sourceStart() }
-        node = node.mapLayers { l -> if ((l["fillImage"] ?: l["fillVideo"]) == slot.uri) swap(l, slot, choice, old, minIn) else l }
-        choice.media?.let { new ->
-            node = Scene(node.copy(children = node.children.filterNot { it.name == "media" && it["uri"] == slot.uri })).withMedia(new).node
-        }
+    val byUri = slots.associateBy { it.uri }
+    val starts = layersOf(template.node).map { it.first }.filter { it.slotUri() in choices }
+        .groupBy { it.slotUri()!! }.mapValues { (_, layers) -> layers.minOf { it.sourceStart() } }
+    // Match original references in one pass: swapping A to B must not also apply B's choice to A.
+    var node = template.node.mapLayers { layer ->
+        val uri = layer.slotUri()
+        val slot = byUri[uri]
+        val choice = choices[uri]
+        if (slot == null || choice == null) layer else swap(layer, slot, choice, template.media(slot.uri), starts.getValue(slot.uri))
+    }
+    val replaced = choices.filterValues { it.media != null }.keys
+    if (replaced.isNotEmpty()) {
+        fun removeOld(n: XmlNode): XmlNode = n.copy(children = n.children.filterNot { it.name == "media" && it["uri"] in replaced }.map(::removeOld))
+        node = removeOld(node)
+        for (choice in choices.values) choice.media?.let { node = Scene(node).withMedia(it).node }
     }
     return Scene(node)
 }
 
 private fun swap(layer: XmlNode, slot: Slot, choice: Choice, old: MediaDeclaration?, minIn: Int): XmlNode {
-    var n = layer.with("mediaFillMode", choice.mode.xml)
+    var n = if (layer.name == "audio") layer else layer.with("mediaFillMode", choice.mode.xml)
     val media = choice.media ?: return n
+    val audio = layer.name == "audio"
     val video = media.type.startsWith("video/")
-    n = n.with("fillImage", media.uri.takeUnless { video }).with("fillVideo", media.uri.takeIf { video })
-    if (!video) {
+    n = if (audio) n.with("src", media.uri) else n.with("fillImage", media.uri.takeUnless { video }).with("fillVideo", media.uri.takeIf { video })
+    if (!video && !audio) {
         n = n.with("inTime", null).with("outTime", null).with("speed", null).with("loop", null).withChild("speedMap", null)
     } else {
         val length = layer.int("endTime", 0) - layer.int("startTime", 0)
-        val wasVideo = layer["fillVideo"] != null
+        val wasVideo = layer["fillVideo"] != null || audio
         val from = if (wasVideo) layer.int("inTime", 0) - minIn else 0
         val known = old?.let { (it.duration / 1000).toInt() }?.takeIf { it > 0 }
         val used = layer.sourceEnd().let { end -> known?.let { min(end, it) } ?: end }.coerceAtLeast(layer.int("inTime", 0))
@@ -174,7 +188,7 @@ private fun swap(layer: XmlNode, slot: Slot, choice: Choice, old: MediaDeclarati
         n.child("speedMap")?.let { n = n.withChild("speedMap", it.keysShifted("t", (start - layer.int("inTime", 0)) * 1e6)) }
         if (layer["loopIn"] != null) n = n.with("loopIn", (layer.int("loopIn", 0) + start - layer.int("inTime", 0)).coerceIn(0, start).toString())
     }
-    return turned(n, media.orientation - (old?.orientation ?: 0))
+    return if (audio) n else turned(n, media.orientation - (old?.orientation ?: 0))
 }
 
 private fun XmlNode.keysShifted(attr: String, by: Double): XmlNode = copy(children = children.map { k ->
@@ -206,20 +220,33 @@ private fun clipScene(media: MediaDeclaration, fps: Int): Scene {
 @Composable
 fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettings, onClose: () -> Unit, onContinue: (Scene) -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val loaded by produceState<Result<Scene?>?>(null, templateId) { value = Result.success(withContext(Dispatchers.IO) { TemplateStore(context).load(templateId) }) }
     val template = loaded?.getOrNull()
     if (template == null) {
         if (loaded == null) Box(Modifier.fillMaxSize().background(Am.TopBar).pointerInput(Unit) {}) else SideEffect(onClose)
         return
     }
+    TemplateMediaEditor(templateId, template, engine, settings, onClose, onContinue)
+}
+
+/** The same replacement editor is used for templates, imported XML and saved compositions. */
+@Composable
+internal fun TemplateMediaEditor(
+    templateId: String, template: Scene, engine: EngineThread, settings: AppSettings,
+    onClose: () -> Unit, onContinue: (Scene) -> Unit,
+    requireMedia: Boolean = false, savePreset: Boolean = false, busy: Boolean = false,
+    step: Int = 1, steps: Int = 1,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val slots = remember(template) { slotsOf(template) }
     var choices by remember(templateId) { mutableStateOf<Map<String, Choice>>(emptyMap()) }
-    var selected by remember(templateId) { mutableStateOf<Slot?>(null) }
+    var selected by remember(templateId) { mutableStateOf<Slot?>(slots.firstOrNull()) }
     var trimming by remember(templateId) { mutableStateOf<Trimming?>(null) }
     var trimStart by remember(templateId) { mutableIntStateOf(0) }
     var asking by remember(templateId) { mutableIntStateOf(0) }
     var frozen by remember(templateId) { mutableStateOf(false) }
+    var shortAudio by remember(templateId) { mutableStateOf(false) }
     var hints by remember(templateId) { mutableIntStateOf(settings.templateHints) }
     var playing by remember(templateId) { mutableStateOf(false) }
     var pos by remember(templateId) { mutableIntStateOf(0) }
@@ -230,28 +257,53 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
     val total = (if (trimming != null) shown.totalTime else template.totalTime).coerceAtLeast(1)
     val time = if (trimming != null) trimStart else pos
     val current by rememberUpdatedState(selected)
-
-    fun choose(slot: Slot, media: MediaDeclaration, trim: Int) { choices = choices + (slot.uri to Choice(media, trim, MediaFillMode.Fill)) }
-    val picker = app.absentmotion.platform.rememberMediaPicker { uri ->
-        val slot = current
-        if (uri == null || slot == null) return@rememberMediaPicker
-        scope.launch {
-            val media = mediaDeclaration(context, uri)
-            val duration = (media?.duration ?: -1) / 1000
-            when {
-                media == null -> Toast.makeText(context, context.getString(R.string.library_err_unsupported_type), Toast.LENGTH_SHORT).show()
-                !media.type.startsWith("video/") -> choose(slot, media, 0)
-                !slot.loop && slot.length - 300 > duration -> { frozen = true; choose(slot, media, 0) }
-                slot.length + 600 < duration -> { trimStart = 0; playing = false; trimming = Trimming(slot, media) }
-                else -> choose(slot, media, 0)
-            }
+    var reading by remember { mutableStateOf(false) }
+    val unavailable = remember(working) { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(working) {
+        unavailable.value = withContext(Dispatchers.IO) {
+            val access = MediaAccess.forApp(context)
+            working.node.mediaUris().filterNot { access.allows(it) && MediaRelink.opens(context, it) }.toSet()
         }
     }
 
-    BackHandler { if (trimming != null) trimming = null else if (choices.isEmpty()) onClose() else asking = 1 }
+    fun choose(slot: Slot, media: MediaDeclaration, trim: Int) { choices = choices + (slot.uri to Choice(media, trim, MediaFillMode.Fill)) }
+    fun read(uri: Uri?, audio: Boolean) {
+        val slot = current
+        if (uri == null || slot == null || reading || busy) return
+        reading = true
+        playing = false
+        scope.launch {
+            try {
+                val media = if (audio) app.absentmotion.audio.audioDeclaration(context, uri) else mediaDeclaration(context, uri)
+                val duration = (media?.duration ?: -1) / 1000
+                when {
+                    media == null -> Toast.makeText(context, context.getString(R.string.library_err_unsupported_type), Toast.LENGTH_SHORT).show()
+                    !audio && !media.type.startsWith("video/") -> choose(slot, media, 0)
+                    !slot.loop && slot.length - 300 > duration -> { shortAudio = audio; frozen = true; choose(slot, media, 0) }
+                    !audio && slot.length + 600 < duration -> { trimStart = 0; trimming = Trimming(slot, media) }
+                    else -> choose(slot, media, 0)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { Toast.makeText(context, context.getString(R.string.library_err_unsupported_type), Toast.LENGTH_SHORT).show() }
+            finally { reading = false }
+        }
+    }
+    val picker = app.absentmotion.platform.rememberMediaPicker { read(it, false) }
+    val audioPicker = app.absentmotion.platform.rememberLauncherForActivityResult(app.absentmotion.platform.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        read(uri, true)
+    }
+    fun next() {
+        if (busy || reading || unavailable.value == null) return
+        val missing = unavailable.value.orEmpty().size
+        if (requireMedia && missing > 0) Toast.makeText(context, context.getString(R.string.preset_media_required, missing), Toast.LENGTH_LONG).show()
+        else asking = 2
+    }
+
+    BackHandler { if (busy || reading) return@BackHandler; if (trimming != null) trimming = null else if (choices.isEmpty()) onClose() else asking = 1 }
     LaunchedEffect(shown) { engine.setScene(shown) }
     DisposableEffect(Unit) { onDispose { engine.setPlaying(false) } }
-    LaunchedEffect(playing) { engine.setPlaying(playing) }
+    LaunchedEffect(playing, busy) { engine.setPlaying(playing && !busy) }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { playing = false }
     val fit =if (box.width == 0) 1f else min(box.width.toFloat() / shown.width, box.height.toFloat() / shown.height)
     LaunchedEffect(fit, time, shown, box) {
@@ -277,7 +329,7 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
         Spacer(Modifier.height(16.dp))
         val clip = trimming
         if (clip == null) {
-            TopBar(stringResource(R.string.template_use_title), ExportIcons.Back, stringResource(R.string.home_back), stringResource(R.string.template_next), { if (choices.isEmpty()) onClose() else asking = 1 }, { asking = 2 })
+            TopBar(stringResource(R.string.template_use_title) + if (steps > 1) " ($step/$steps)" else "", ExportIcons.Back, stringResource(R.string.home_back), stringResource(if (savePreset && step == steps) R.string.preset_media_save else R.string.template_next), { if (!busy && !reading) { if (choices.isEmpty()) onClose() else asking = 1 } }, ::next)
         } else {
             TopBar(stringResource(R.string.template_drag_to_select), HomeIcons.Close, stringResource(R.string.action_close), stringResource(R.string.done), { trimming = null }, {
                 choose(clip.slot, clip.media, trimStart)
@@ -286,7 +338,7 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
         }
         Spacer(Modifier.height(16.dp))
         Box(Modifier.padding(horizontal = 16.dp).fillMaxWidth().weight(1f).clip(Rounded).background(Am.PreviewBg).onSizeChanged { box = it }
-            .clickable(enabled = clip == null) { playing = !playing }) {
+            .clickable(enabled = clip == null && !busy && !reading) { playing = !playing }) {
             app.absentmotion.platform.SceneSurface(engine, 1, box, Modifier.fillMaxSize())
             if (clip == null && !playing) Box(Modifier.align(Alignment.Center).size(56.dp).clip(CircleShape).background(Color(0x66000000)), Alignment.Center) {
                 Icon(ChromeIcons.Play, stringResource(R.string.template_play), Modifier.size(32.dp), tint = Color.White)
@@ -313,20 +365,29 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
             }
             Spacer(Modifier.height(16.dp))
             Text(stringResource(R.string.media_slots), Modifier.padding(horizontal = 16.dp), color = Am.OnDark, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            val missing = unavailable.value?.size
+            Text(stringResource(when { slots.isEmpty() -> R.string.preset_media_no_slots; missing == null || reading -> R.string.preset_media_checking; missing > 0 -> R.string.preset_media_required; else -> R.string.preset_media_ready }, missing ?: 0),
+                Modifier.padding(horizontal = 16.dp, vertical = 6.dp), color = if (missing != null && missing > 0) Am.Accent else Am.OnDarkDim, fontSize = 13.sp)
             Spacer(Modifier.height(12.dp))
             LazyRow(Modifier.fillMaxWidth().height(96.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                itemsIndexed(slots, key = { _, s -> s.uri }) { _, slot ->
+                itemsIndexed(slots, key = { _, s -> s.uri }) { index, slot ->
                     val choice = choices[slot.uri]
                     val uri = choice?.media?.uri ?: slot.uri
                     val video = choice?.media?.type?.startsWith("video/") ?: slot.video
-                    val picture by produceState<ImageBitmap?>(null, uri, video) { value = app.absentmotion.platform.slotPicture(context, uri, video) }
+                    val picture by produceState<ImageBitmap?>(null, uri, video) { value = if (slot.audio) null else app.absentmotion.platform.slotPicture(context, uri, video) }
                     SlotCell(
                         picture, slot === selected, choice?.mode ?: slot.mode,
+                        label = "${index + 1}. " + (choice?.media?.filename?.takeIf { it.isNotBlank() } ?: template.media(slot.uri)?.filename?.takeIf { it.isNotBlank() }
+                            ?: stringResource(if (slot.audio) R.string.preset_media_audio else if (slot.video) R.string.preset_media_video else R.string.preset_media_image)),
+                        audio = slot.audio, missing = uri in unavailable.value.orEmpty(),
                         onTap = {
-                            if (slot === selected) picker.launch()
-                            else { selected = slot; playing = false; pos = slot.start }
+                            if (!reading && !busy) {
+                                selected = slot; playing = false; pos = slot.start.coerceIn(0, total)
+                                if (slot.audio) audioPicker.launch(arrayOf("audio/*")) else picker.launch()
+                            }
                         },
                         onScale = {
+                            if (busy || reading) return@SlotCell
                             val next = MediaFillMode.entries[((choice?.mode ?: slot.mode).ordinal + 1) % MediaFillMode.entries.size]
                             choices = choices + (slot.uri to Choice(choice?.media, choice?.trim ?: 0, next))
                         },
@@ -359,12 +420,17 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
         stringResource(R.string.template_keep_editing), { asking = 0 }, stringResource(R.string.template_exit), { asking = 0; onClose() },
     )
     if (asking == 2) Ask(
-        stringResource(R.string.template_finish_title), stringResource(R.string.template_finish_body),
-        stringResource(R.string.template_keep_editing_template), { asking = 0 }, stringResource(R.string.template_go_to_timeline), { asking = 0; playing = false; onContinue(working) },
+        stringResource(R.string.template_finish_title), stringResource(if (step < steps) R.string.preset_media_next_body else if (savePreset) R.string.preset_media_finish_body else R.string.template_finish_body),
+        stringResource(R.string.template_keep_editing_template), { asking = 0 }, stringResource(if (step < steps) R.string.template_next else if (savePreset) R.string.preset_media_save else R.string.template_go_to_timeline), { asking = 0; playing = false; onContinue(working) },
+    )
+    if (busy) AlertDialog(
+        onDismissRequest = {}, title = { Text(stringResource(R.string.preset_media_saving)) },
+        text = { androidx.compose.material3.CircularProgressIndicator(color = Am.Accent) }, confirmButton = {},
+        containerColor = Am.Field, titleContentColor = Am.OnDark,
     )
     if (frozen) AlertDialog(
-        onDismissRequest = { frozen = false }, title = { Text(stringResource(R.string.video_frozen)) },
-        text = { Text(stringResource(R.string.your_video_ended_early_so_its)) },
+        onDismissRequest = { frozen = false }, title = { Text(stringResource(if (shortAudio) R.string.preset_media_audio_short_title else R.string.video_frozen)) },
+        text = { Text(stringResource(if (shortAudio) R.string.preset_media_audio_short else R.string.your_video_ended_early_so_its)) },
         confirmButton = { TextButton({ frozen = false }) { Text(stringResource(R.string.ok), color = Am.Accent) } },
         containerColor = Am.Field, titleContentColor = Am.OnDark, textContentColor = Am.OnDark,
     )
@@ -373,12 +439,13 @@ fun TemplateEditor(templateId: String, engine: EngineThread, settings: AppSettin
 @Composable
 private fun TopBar(title: String, icon: ImageVector, description: String, action: String, onBack: () -> Unit, onAction: () -> Unit) {
     val desk = app.absentmotion.platform.PlatformFeatures.desktop
-    Box(Modifier.fillMaxWidth().height(48.dp)) {
+    Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(48.dp).deskPress(8.dp).clickable(onClick = onBack), Alignment.Center) { Icon(icon, description, Modifier.size(24.dp), tint = Am.OnDark) }
-        Text(title, Modifier.align(Alignment.Center).padding(horizontal = 92.dp), color = Am.OnDark, fontWeight = FontWeight.Bold, maxLines = 1,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center, autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(11.sp, if (desk) 18.sp else 22.sp, 0.5.sp))
-        Box(Modifier.align(Alignment.CenterEnd).height(48.dp).deskPress(8.dp).clickable(onClick = onAction).padding(horizontal = 16.dp), Alignment.Center) {
-            Text(action, color = Am.Accent, fontSize = if (desk) 15.sp else 18.sp, fontWeight = if (desk) FontWeight.Medium else null, maxLines = 1)
+        Text(title, Modifier.weight(1f).padding(horizontal = 8.dp), color = Am.OnDark, fontWeight = FontWeight.Bold, maxLines = 1,
+            textAlign = TextAlign.Center, autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(11.sp, if (desk) 18.sp else 22.sp, 0.5.sp))
+        Box(Modifier.height(48.dp).widthIn(max = 160.dp).deskPress(8.dp).clickable(onClick = onAction).padding(horizontal = 12.dp), Alignment.Center) {
+            Text(action, color = Am.Accent, fontSize = if (desk) 15.sp else 16.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(11.sp, if (desk) 15.sp else 16.sp, 0.5.sp))
         }
     }
 }
@@ -414,16 +481,18 @@ private fun Track(progress: Float, lit: Pair<Float, Float>?, modifier: Modifier,
 }
 
 @Composable
-private fun SlotCell(picture: ImageBitmap?, selected: Boolean, mode: MediaFillMode, onTap: () -> Unit, onScale: () -> Unit) {
+private fun SlotCell(picture: ImageBitmap?, selected: Boolean, mode: MediaFillMode, label: String, audio: Boolean, missing: Boolean, onTap: () -> Unit, onScale: () -> Unit) {
     Box(
         Modifier.size(96.dp).clip(Rounded).background(Color.Black).then(if (selected) Modifier.border(2.dp, Am.Accent, Rounded) else Modifier).handCursor().clickable(onClickLabel = stringResource(if (selected) R.string.template_replace else R.string.template_tap_to_pick), onClick = onTap),
     ) {
         picture?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
-        if (selected) Box(Modifier.align(Alignment.Center).size(40.dp).clip(CircleShape).background(Color(0x99000000)), Alignment.Center) {
+        if (audio || picture == null) Icon(if (audio) HomeIcons.Audio else HomeIcons.Replace, label, Modifier.align(Alignment.Center).size(28.dp), tint = Am.OnDarkDim)
+        Text(label, Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0xBB000000)).padding(5.dp), color = if (missing) Am.Accent else Color.White, fontSize = 11.sp, maxLines = 2)
+        if (selected && picture != null) Box(Modifier.align(Alignment.Center).size(40.dp).clip(CircleShape).background(Color(0x99000000)), Alignment.Center) {
             Icon(HomeIcons.Replace, stringResource(R.string.template_replace), Modifier.size(24.dp), tint = Color.White)
         }
         val press = remember { MutableInteractionSource() }
-        Box(Modifier.align(Alignment.TopEnd).size(44.dp).clickable(press, null, onClick = onScale), Alignment.Center) {
+        if (!audio) Box(Modifier.align(Alignment.TopEnd).size(44.dp).clickable(press, null, onClick = onScale), Alignment.Center) {
             Box(Modifier.size(28.dp).pressShape(press, CircleShape).background(Color(0x99000000)), Alignment.Center) {
                 Icon(when (mode) { MediaFillMode.Fill -> HomeIcons.CropFill; MediaFillMode.Fit -> HomeIcons.CropFit; MediaFillMode.Stretch -> HomeIcons.CropStretch }, stringResource(R.string.template_scale), Modifier.size(20.dp), tint = Color.White)
             }

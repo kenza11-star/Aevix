@@ -186,6 +186,7 @@ fun HomeScreen(
     var loaded by remember { mutableStateOf(false) }
     var version by remember { mutableIntStateOf(0) }
     var templateSection by rememberSaveable { mutableIntStateOf(0) }
+    var editingPreset by remember { mutableStateOf<app.absentmotion.library.SavedPreset?>(null) }
     var presetReport by remember { mutableStateOf<app.absentmotion.library.PresetImportResult?>(null) }
     var tab by rememberSaveable { mutableIntStateOf(lastTab) }
     var page by rememberSaveable { mutableIntStateOf(lastPage) }
@@ -236,7 +237,9 @@ fun HomeScreen(
                     search = null
                     presetReport = result.takeIf { it.reports.any { report -> report.sections.isNotEmpty() } }
                 }) { id -> version++; onOpen(id) }
-                else if (page == 1) TemplatesTab(version, onTemplate, onTemplateProject, fill, query, templateSection, { templateSection = it }) else ProjectsPane(
+                else if (page == 1) TemplatesTab(version, onTemplate, onTemplateProject, fill, query, templateSection, { templateSection = it }, onPreset = { preset ->
+                    if (presetEngine == null) onTemplateProject(preset.scene) else editingPreset = preset
+                }) else ProjectsPane(
                     Modifier.weight(1f), shown, loaded, tab, { tab = it }, settings, version, onOpen, onExport, query,
                     onUpload = { picker.launch(arrayOf("text/xml", "application/xml", "application/zip", "application/octet-stream")) },
                     onDuplicate = { id -> if (!duplicating) {
@@ -258,7 +261,7 @@ fun HomeScreen(
             }
             BottomBar(onNew = newProject, page, { page = it; if (it >= 2) search = null }, Modifier.align(Alignment.BottomCenter), navInset, wide, settings.vibration)
             if (toReport.isNotEmpty()) ImportDialog(toReport, onDismiss = onImportShown, onOpen = { onImportShown(); toReport.first().let { if (it.template) onTemplate(it.id) else onOpen(it.id) } })
-            presetReport?.let { PresetImportReportDialog(it) { presetReport = null } }
+            if (editingPreset == null) presetReport?.let { PresetImportReportDialog(it) { presetReport = null } }
             Presence(creating) {
                 NewProjectSheet(
                     store, settings, projects.map { it.title }, initialElement, opening, onClose = { creating = false },
@@ -267,6 +270,19 @@ fun HomeScreen(
             }
         }
     }
+    editingPreset?.let { preset ->
+        presetEngine?.let { engine ->
+            androidx.compose.ui.window.Dialog({}, androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+                app.absentmotion.platform.DialogStatusBarIcons(darkIcons = false)
+                androidx.compose.runtime.key(preset.id) {
+                    TemplateMediaEditor(preset.id, preset.scene, engine, settings,
+                        onClose = { editingPreset = null },
+                        onContinue = { scene -> editingPreset = null; onTemplateProject(scene) }, requireMedia = true)
+                }
+            }
+        }
+    }
+
 }
 
 private var lastTab = 0

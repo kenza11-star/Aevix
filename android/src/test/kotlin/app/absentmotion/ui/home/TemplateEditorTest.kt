@@ -118,4 +118,44 @@ class TemplateEditorTest {
     @Test fun nothingChosenLeavesTheTemplateAsItWas() {
         assertEquals(template, applied(template, slotsOf(template), emptyMap()))
     }
+    @Test fun nestedMissingMediaIsAReplaceableSlotAndLeavesNoStaleDeclaration() {
+        val scene = Scene.parse("""<scene width="100" height="100" totalTime="3000"><embedScene id="1" startTime="1000" endTime="2999"><scene width="100" height="100"><media uri="blocked-file:/old.jpg" missing="true"/><shape id="2" startTime="200" endTime="1200" fillType="media" fillImage="blocked-file:/old.jpg"/></scene></embedScene></scene>""")
+        val slot = slotsOf(scene).single()
+        assertEquals(1200, slot.start)
+        assertEquals(2200, slot.end)
+        val out = applied(scene, listOf(slot), mapOf(slot.uri to Choice(media("content://new", "image/png"), 0, MediaFillMode.Fit)))
+        assertTrue(slot.uri !in out.toXml())
+        assertEquals(setOf("content://new"), out.node.mediaUris())
+        val inner = out.layers.single().node.child("scene")!!
+        assertEquals("200", inner.children.single()["startTime"])
+        assertEquals("1200", inner.children.single()["endTime"])
+    }
+
+    @Test fun audioIsReplaceableAndKeepsGainEffectsAndTimelinePosition() {
+        val scene = Scene.parse("""<scene width="100" height="100" totalTime="5000"><audio id="1" src="blocked-content://old/audio" startTime="1000" endTime="4000" inTime="500" outTime="3500" speed="1"><property name="gain" type="float" value="0.5"/><effect id="absent.equalizer"/></audio></scene>""")
+        val slot = slotsOf(scene).single()
+        assertTrue(slot.audio)
+        assertEquals(3000, slot.length)
+        val out = applied(scene, listOf(slot), mapOf(slot.uri to Choice(media("content://newaudio", "audio/mp4", 10_000_000), 0, MediaFillMode.Fill)))
+        val layer = out.layers.single().node
+        assertEquals("content://newaudio", layer["src"])
+        assertEquals("1000", layer["startTime"])
+        assertEquals("4000", layer["endTime"])
+        assertEquals("3000", layer["outTime"])
+        assertEquals("0.5", layer.child("property")!!["value"])
+        assertEquals("absent.equalizer", layer.child("effect")!!["id"])
+        assertNull(layer["fillImage"])
+        assertNull(layer["fillVideo"])
+    }
+
+    @Test fun selectingAnotherOriginalMediaDoesNotChainTwoReplacements() {
+        val out = applied(template, slotsOf(template), mapOf(
+            "file:/a.jpg" to Choice(media("file:/v.mp4", "video/mp4", 4_000_000), 0, MediaFillMode.Fill),
+            "file:/v.mp4" to Choice(media("content://other", "video/mp4", 4_000_000), 0, MediaFillMode.Fill),
+        ))
+        assertEquals("file:/v.mp4", out.layer(1)!!.node["fillVideo"])
+        assertEquals("content://other", out.layer(2)!!.node["fillVideo"])
+        assertEquals("file:/v.mp4", out.layer(3)!!.node.child("scene")!!.children.single()["fillVideo"])
+    }
+
 }

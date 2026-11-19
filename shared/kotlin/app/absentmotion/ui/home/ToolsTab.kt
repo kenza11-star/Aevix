@@ -224,7 +224,7 @@ internal fun ToolsTab(
         4 -> ExtractAudioScreen { open = 0 }
         5 -> GifScreen { open = 0 }
         6, 7 -> presetEngine?.let { engine ->
-            PresetImportScreen(open == 6, store, engine, onSaved = { result -> open = 0; onPresetsSaved(result) }) { open = 0 }
+            PresetImportScreen(open == 6, store, engine, settings, onSaved = { result -> open = 0; onPresetsSaved(result) }) { open = 0 }
         }
     }
 }

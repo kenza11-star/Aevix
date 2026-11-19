@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.absentmotion.R
 import app.absentmotion.engine.EngineThread
+import app.absentmotion.library.AppSettings
+import app.absentmotion.model.Scene
 import app.absentmotion.library.ImportFailed
 import app.absentmotion.library.PresetImport
 import app.absentmotion.library.PresetImportResult
@@ -52,6 +55,7 @@ import app.absentmotion.platform.PlatformFeatures
 import app.absentmotion.platform.Uri
 import app.absentmotion.platform.rememberLauncherForActivityResult
 import app.absentmotion.ui.theme.Am
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -64,12 +68,19 @@ import java.io.InputStream
 
 @Composable
 internal fun PresetImportScreen(
-    paste: Boolean, projects: ProjectStore, engine: EngineThread,
+    paste: Boolean, projects: ProjectStore, engine: EngineThread, settings: AppSettings,
     onSaved: (PresetImportResult) -> Unit, onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val importer = remember(context, projects, engine) { PresetImport.forApp(context, projects, engine) }
+    var draft by remember { mutableStateOf<PresetImport.Draft?>(null) }
+    var index by remember { mutableStateOf(0) }
+    var edited by remember { mutableStateOf<List<Scene>>(emptyList()) }
+    DisposableEffect(draft) {
+        val owned = draft
+        onDispose { if (owned != null) CoroutineScope(Dispatchers.IO).launch { owned.discard() } }
+    }
     var text by remember { mutableStateOf("") }
     var document by remember { mutableStateOf<Uri?>(null) }
     var running by remember { mutableStateOf(false) }
@@ -106,9 +117,9 @@ internal fun PresetImportScreen(
                     val uri = document ?: throw PresetSourceException(PresetSourceProblem.Empty)
                     ({ context.contentResolver.openInputStream(uri) })
                 }
-                val result = importer.import(open)
-                job.ensureActive()
-                onSaved(result)
+                draft = importer.prepare(open)
+                index = 0
+                edited = emptyList()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: PresetSourceException) {
@@ -132,6 +143,39 @@ internal fun PresetImportScreen(
                 running = false
             }
         }
+    }
+    val prepared = draft
+    if (prepared != null) {
+        androidx.compose.ui.window.Dialog({}, androidx.compose.ui.window.DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            app.absentmotion.platform.DialogStatusBarIcons(darkIcons = false)
+            key(prepared.reports[index].id) {
+                TemplateMediaEditor(
+                    prepared.reports[index].id, prepared.scenes[index], engine, settings,
+                    onClose = { if (!running) { draft = null; edited = emptyList() } },
+                    onContinue = { scene ->
+                        if (!running) {
+                            val all = edited + scene
+                            if (index < prepared.scenes.lastIndex) { edited = all; index++ }
+                            else {
+                                running = true
+                                scope.launch {
+                                    try {
+                                        val result = prepared.save(all, requireMedia = true)
+                                        currentCoroutineContext().ensureActive()
+                                        onSaved(result)
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (_: OutOfMemoryError) { draft = null; problem = context.getString(R.string.tools_too_big) }
+                                    catch (failure: Exception) { draft = null; problem = context.getString(R.string.preset_import_failed, failure.message.orEmpty()) }
+                                    finally { running = false }
+                                }
+                            }
+                        }
+                    },
+                    requireMedia = true, savePreset = true, busy = running, step = index + 1, steps = prepared.scenes.size,
+                )
+            }
+        }
+        return
     }
     ToolSheet(
         title = stringResource(if (paste) R.string.tools_paste_preset else R.string.tools_upload_xml), onBack = onBack,

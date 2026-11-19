@@ -24,12 +24,12 @@ class PresetImport(
     private val importer: Importer,
     private val render: suspend (Scene, Int, File) -> Boolean,
 ) {
-    suspend fun import(open: () -> InputStream?): PresetImportResult {
+    /** Keep package assets alive while the user replaces the composition's media. */
+    suspend fun prepare(open: () -> InputStream?): Draft {
         val reports = ArrayList<ImportReport>()
-        val saved = ArrayList<SavedPreset>()
-        var complete = false
+        var delivered = false
         try {
-            val result = withContext(Dispatchers.IO) {
+            val draft = withContext(Dispatchers.IO) {
                 val job = currentCoroutineContext()
                 reports += importer.import {
                     open()?.let { input -> object : FilterInputStream(input) {
@@ -40,24 +40,71 @@ class PresetImport(
                         }
                     } }
                 }
-                for (report in reports) {
+                val scenes = reports.map { report ->
                     job.ensureActive()
                     val scene = projects.load(report.id) ?: throw IOException("The imported scene could not be read")
                     if (scene.layers.isEmpty()) throw ImportFailed(txt(R.string.preset_import_empty_scene))
-                    val preset = presets.addComposition(scene, render)
-                    saved += preset
-                    if (preset.scene.node.storedMediaUris().any(projects::inMediaFolder)) {
-                        throw IOException("Preset media could not be copied")
-                    }
+                    scene
                 }
-                PresetImportResult(saved.toList(), reports.mapIndexed { index, report -> report.copy(id = saved[index].id) })
+                Draft(reports.toList(), scenes)
             }
-            complete = true
-            return result
+            delivered = true
+            return draft
         } finally {
-            withContext(NonCancellable + Dispatchers.IO) {
-                if (!complete) saved.forEach { presets.delete(it.id) }
+            if (!delivered) withContext(NonCancellable + Dispatchers.IO) { reports.forEach { projects.delete(it.id) } }
+        }
+    }
+
+    suspend fun import(open: () -> InputStream?): PresetImportResult = prepare(open).save()
+
+    inner class Draft internal constructor(val reports: List<ImportReport>, val scenes: List<Scene>) {
+        private val mutex = kotlinx.coroutines.sync.Mutex()
+        private var closed = false
+
+        suspend fun discard() = withContext(NonCancellable + Dispatchers.IO) {
+            mutex.lock()
+            try { close() } finally { mutex.unlock() }
+        }
+
+        private fun close() {
+            if (!closed) {
                 reports.forEach { projects.delete(it.id) }
+                closed = true
+            }
+        }
+
+        /** Publish only after every composition is edited; failed batches are rolled back. */
+        suspend fun save(edited: List<Scene> = scenes, requireMedia: Boolean = false): PresetImportResult {
+            val saved = ArrayList<SavedPreset>()
+            var complete = false
+            mutex.lock()
+            try {
+                check(!closed) { "Preset import has already finished" }
+                require(edited.size == scenes.size)
+                val result = withContext(Dispatchers.IO) {
+                    for (scene in edited) {
+                        currentCoroutineContext().ensureActive()
+                        if (requireMedia && importer.missingMedia(scene).isNotEmpty()) throw IOException("Media is no longer available. Choose the replacement again.")
+                        val preset = presets.addComposition(scene, requireMedia, render)
+                        saved += preset
+                        if (preset.scene.node.storedMediaUris().any(projects::inMediaFolder) ||
+                            requireMedia && importer.missingMedia(preset.scene).isNotEmpty()) {
+                            throw IOException("Preset media could not be copied")
+                        }
+                    }
+                    PresetImportResult(saved.toList(), reports.mapIndexed { index, report ->
+                        importer.refreshMediaReport(report, saved[index].scene).copy(id = saved[index].id)
+                    })
+                }
+                complete = true
+                return result
+            } finally {
+                try {
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        if (!complete) saved.forEach { presets.delete(it.id) }
+                        close()
+                    }
+                } finally { mutex.unlock() }
             }
         }
     }

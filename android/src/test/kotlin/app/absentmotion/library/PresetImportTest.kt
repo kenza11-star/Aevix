@@ -87,7 +87,12 @@ class PresetImportTest {
                 zip.putNextEntry(ZipEntry(name)); zip.write(data.toByteArray()); zip.closeEntry()
             }
         } }.toByteArray()
-        val result = service(projects, presets).import { ByteArrayInputStream(bytes) }
+        val draft = service(projects, presets).prepare { ByteArrayInputStream(bytes) }
+        val staged = File(URI(draft.scenes.single().node.mediaUris().single()))
+        assertEquals("image bytes", staged.readText())
+        assertTrue(presets.list().isEmpty())
+        val result = draft.save(requireMedia = true)
+        assertFalse(staged.exists())
         val saved = presets.load(result.presets.single().id)!!
         val uris = saved.scene.node.mediaUris().toList()
         assertTrue(uris.isNotEmpty())
@@ -148,4 +153,93 @@ class PresetImportTest {
         assertEquals("com.alightcreative.effects.unknownfutureeffect", result.presets.single().scene.layers.single().node.child("effect")!!["id"])
         assertTrue(result.reports.single().sections.isNotEmpty())
     }
+    @Test fun preparationDoesNotRenderOrPublishAndDiscardIsIdempotent() = runBlocking {
+        val projects = ProjectStore(tmp.newFolder())
+        val presets = PresetStore(tmp.newFolder())
+        var renders = 0
+        val draft = service(projects, presets) { _, _, file -> renders++; file.writeText("preview"); true }
+            .prepare { xml.byteInputStream() }
+        assertEquals(1, draft.scenes.size)
+        assertEquals(0, renders)
+        assertTrue(presets.list().isEmpty())
+        assertEquals(1, projects.list().size)
+        draft.discard()
+        draft.discard()
+        assertTrue(projects.list().isEmpty())
+        assertTrue(presets.list().isEmpty())
+    }
+
+    @Test fun replacingMissingMediaBeforeSaveUpdatesTheReportAndKeepsAnimations() = runBlocking {
+        val projects = ProjectStore(tmp.newFolder())
+        val presets = PresetStore(tmp.newFolder())
+        val selected = tmp.newFile("selected.jpg").also { it.writeText("my photo") }
+        val input = """<scene width="100" height="100" fps="30" totalTime="2000"><media uri="missing:old.jpg" missing="true"/>
+            <shape id="1" startTime="500" endTime="1999" fillType="media" fillImage="missing:old.jpg"><transform><location><kf t="0" v="0,0,0"/><kf t="1" v="10,20,0"/></location></transform></shape></scene>"""
+        val importer = PresetImport(projects, presets, Importer(projects, exists = { uri ->
+            runCatching { File(URI(uri)).isFile }.getOrDefault(false)
+        })) { _, _, file -> file.writeText("preview"); true }
+        val draft = importer.prepare { input.byteInputStream() }
+        assertTrue(draft.reports.single().sections.isNotEmpty())
+        val chosen = app.absentmotion.model.MediaDeclaration(app.absentmotion.model.XmlNode("media", mapOf("uri" to selected.toURI().toString(), "type" to "image/jpeg")))
+        val working = app.absentmotion.ui.home.applied(draft.scenes.single(), app.absentmotion.ui.home.slotsOf(draft.scenes.single()),
+            mapOf("missing:old.jpg" to app.absentmotion.ui.home.Choice(chosen, 0, app.absentmotion.model.MediaFillMode.Fill)))
+        val result = draft.save(listOf(working), requireMedia = true)
+        assertTrue(result.reports.single().sections.isEmpty())
+        val saved = result.presets.single().scene
+        assertEquals("500", saved.layers.single().node["startTime"])
+        assertEquals("10,20,0", saved.layers.single().node.child("transform")!!.child("location")!!.children.last()["v"])
+        val copied = File(URI(saved.node.mediaUris().single()))
+        selected.delete()
+        assertEquals("my photo", copied.readText())
+        assertTrue(projects.list().isEmpty())
+    }
+
+    @Test fun requiredMediaCannotBeSavedIfTheChosenFileWasRemoved() = runBlocking {
+        val projects = ProjectStore(tmp.newFolder())
+        val presets = PresetStore(tmp.newFolder())
+        val input = """<scene width="100" height="100" fps="30" totalTime="1000"><shape id="1" startTime="0" endTime="999" fillType="media" fillImage="file:/gone.jpg"/></scene>"""
+        val draft = service(projects, presets).prepare { input.byteInputStream() }
+        try {
+            draft.save(requireMedia = true)
+            fail("Published a preset without copying its required media")
+        } catch (_: IOException) {
+            assertTrue(projects.list().isEmpty())
+            assertTrue(presets.list().isEmpty())
+        }
+    }
+
+    @Test fun cancelAfterPrepareDoesNotRemoveThePreviousPreset() = runBlocking {
+        val projects = ProjectStore(tmp.newFolder())
+        val presets = PresetStore(tmp.newFolder())
+        val service = service(projects, presets)
+        val previous = service.import { xml.byteInputStream() }.presets.single()
+        val draft = service.prepare { xml.byteInputStream() }
+        draft.discard()
+        assertEquals(listOf(previous.id), presets.list().map { it.id })
+        assertTrue(projects.list().isEmpty())
+    }
+
+    @Test fun failedSecondCompositionRollsBackTheWholeEditedBatch() = runBlocking {
+        val projects = ProjectStore(tmp.newFolder())
+        val presets = PresetStore(tmp.newFolder())
+        val bytes = ByteArrayOutputStream().also { out -> ZipOutputStream(out).use { zip ->
+            for ((name, data) in listOf("one.xml" to xml, "two.xml" to xml, "manifest.json" to """{"format":"absentmotion-package","version":1,"media":[]}""")) {
+                zip.putNextEntry(ZipEntry(name)); zip.write(data.toByteArray()); zip.closeEntry()
+            }
+        } }.toByteArray()
+        var renders = 0
+        val draft = service(projects, presets) { _, _, file -> renders++; file.writeText("preview"); renders < 2 }
+            .prepare { bytes.inputStream() }
+        assertEquals(2, draft.scenes.size)
+        assertEquals(0, renders)
+        try {
+            draft.save(requireMedia = true)
+            fail("Published a partially rendered batch")
+        } catch (_: IOException) {
+            assertEquals(2, renders)
+            assertTrue(presets.list().isEmpty())
+            assertTrue(projects.list().isEmpty())
+        }
+    }
+
 }

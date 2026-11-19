@@ -81,7 +81,7 @@ private val FactText get() = Am.HomeDim
 @Composable
 fun TemplatesTab(
     version: Int, onTemplate: (String) -> Unit, onProject: (Scene) -> Unit, modifier: Modifier = Modifier, query: String = "",
-    section: Int = 0, onSection: (Int) -> Unit = {},
+    section: Int = 0, onSection: (Int) -> Unit = {}, onPreset: (app.absentmotion.library.SavedPreset) -> Unit = { onProject(it.scene) },
 ) {
     val context = LocalContext.current
     val templates = remember { TemplateStore(context) }
@@ -136,7 +136,7 @@ fun TemplatesTab(
                         )
                     }
                     val presetCard: @Composable (SavedPreset) -> Unit = { p ->
-                        Card(Modifier.heightIn(min = 88.dp), onClick = if (p.composition) ({ onProject(p.scene) }) else null) {
+                        Card(Modifier.heightIn(min = 88.dp), onClick = if (p.composition) ({ onPreset(p) }) else null) {
                             Box(Modifier.padding(8.dp).size(64.dp).clip(RoundedCornerShape(8.dp)).checkerboard(5.dp), contentAlignment = Alignment.Center) {
                                 val image = rememberFileBitmap(p.thumbnail, p.modified)
                                 if (image != null) Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
